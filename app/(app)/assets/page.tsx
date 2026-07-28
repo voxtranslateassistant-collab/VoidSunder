@@ -6,7 +6,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Table, Th, Td, Tr } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
 import { EmptyState } from "@/components/ui/empty-state";
-import { getAssets, getScans } from "@/lib/store";
+import { getOperationalAssets } from "@/lib/operational-data";
 import { ASSET_KIND_LABEL } from "@/lib/constants";
 import { formatRelativeTime, shortUrl } from "@/lib/utils";
 
@@ -26,13 +26,9 @@ function riskTone(score: number): "red" | "amber" | "lime" {
 }
 
 export default async function AssetsPage() {
-  const [assets, scans] = await Promise.all([getAssets(), getScans()]);
+  const assets = await getOperationalAssets();
 
   // Último scan de cada alvo (scans já vêm ordenados do mais recente).
-  const latestScanByAsset = new Map<string, string>();
-  for (const s of scans) {
-    if (!latestScanByAsset.has(s.assetId)) latestScanByAsset.set(s.assetId, s.id);
-  }
 
   return (
     <>
@@ -84,8 +80,7 @@ export default async function AssetsPage() {
                   </thead>
                   <tbody>
                     {assets.map((a) => {
-                      const scanId = latestScanByAsset.get(a.id);
-                      const href = scanId ? `/scans/${scanId}` : "/scans";
+                      const href = "/scans";
                       return (
                         <Tr key={a.id} className="group cursor-pointer">
                           <Td className="py-2.5">

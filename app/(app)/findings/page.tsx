@@ -2,13 +2,13 @@ import { TopBar } from "@/components/layout/topbar";
 import { FindingsExplorer } from "@/components/findings/findings-explorer";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Card, CardContent } from "@/components/ui/card";
-import { getFindings } from "@/lib/store";
+import { getOperationalFindings } from "@/lib/operational-data";
 
 export const metadata = { title: "Achados" };
 export const dynamic = "force-dynamic";
 
 export default async function FindingsPage() {
-  const findings = await getFindings();
+  const findings = await getOperationalFindings();
   const openCount = findings.filter(
     (f) => f.status === "open" || f.status === "confirmed",
   ).length;

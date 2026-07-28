@@ -1,7 +1,7 @@
 import { TopBar } from "@/components/layout/topbar";
 import { Card, CardContent } from "@/components/ui/card";
 import { EmptyState } from "@/components/ui/empty-state";
-import { getAllEvidence } from "@/lib/store";
+import { getOperationalEvidence } from "@/lib/operational-data";
 import { formatBytes, formatRelativeTime } from "@/lib/utils";
 
 export const metadata = { title: "Cofre de Provas" };
@@ -15,7 +15,7 @@ const KIND_LABEL: Record<string, string> = {
 };
 
 export default async function EvidencePage() {
-  const evidence = await getAllEvidence();
+  const evidence = await getOperationalEvidence();
 
   return (
     <>
