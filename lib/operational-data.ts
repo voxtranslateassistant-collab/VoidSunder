@@ -18,9 +18,23 @@ export async function getOperationalFindings(): Promise<Finding[]> {
   });
 }
 
+export async function getOperationalFindingById(id: string): Promise<Finding | undefined> {
+  return (await getOperationalFindings()).find((finding) => finding.id === id);
+}
+
+export async function setOperationalFindingAiNote(id: string, note: string) {
+  const supabase = await createClient();
+  const { error } = await supabase.from("findings").update({ ai_triage_note: note }).eq("id", id);
+  if (error) throw error;
+}
+
 export async function getOperationalEvidence(): Promise<Evidence[]> {
   const supabase = await createClient();
   const { data, error } = await supabase.from("evidence_artifacts").select("*").order("captured_at", { ascending: false });
   if (error) throw error;
   return (data ?? []).map((artifact) => ({ id: artifact.id, findingId: artifact.finding_id ?? "", scanId: artifact.job_id ?? "", kind: artifact.kind === "http_response" ? "http_response" : "config", label: artifact.label, content: artifact.redacted_preview ?? "Evidência privada disponível no bucket.", sizeBytes: Number(artifact.size_bytes ?? 0), capturedAt: artifact.captured_at }));
+}
+
+export async function getOperationalEvidenceByFinding(findingId: string) {
+  return (await getOperationalEvidence()).filter((evidence) => evidence.findingId === findingId);
 }
