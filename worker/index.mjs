@@ -99,6 +99,30 @@ function openApiInventory(configuration) {
   } catch { return []; }
 }
 
+function apiCorsFindings(headers, target) {
+  const origin = headers.get("access-control-allow-origin");
+  const credentials = headers.get("access-control-allow-credentials");
+  if (origin === "*" && credentials?.toLowerCase() === "true") {
+    return [{
+      title: "CORS permissivo com credenciais", severity: "high", cwe: "CWE-942", remediation: "Restrinja Access-Control-Allow-Origin a origens confiáveis e não combine curinga com credenciais.", endpoint: target,
+      summary: "A resposta permite origem curinga e declara suporte a credenciais.", confidence: 0.95, finding_type: "cors_misconfiguration", validation_status: "confirmed",
+      evidence_masked: "Access-Control-Allow-Origin: *; Access-Control-Allow-Credentials: true", source: "http_headers",
+      impact: "Pode expor respostas autenticadas a origens não confiáveis quando navegadores aceitarem a configuração.", attack_prerequisites: "Usuário autenticado acessando origem não confiável compatível.",
+      recommended_fix: "Use uma lista explícita de origens confiáveis, valide Origin no servidor e limite credenciais.", retest_steps: "Solicite o endpoint com uma origem não autorizada e confirme que CORS não concede acesso.", scope_compliance: "approved",
+    }];
+  }
+  if (origin === "*") {
+    return [{
+      title: "CORS amplo detectado", severity: "medium", cwe: "CWE-942", remediation: "Avalie se respostas públicas exigem Access-Control-Allow-Origin: *; restrinja quando houver dados ou ações sensíveis.", endpoint: target,
+      summary: "A resposta declara Access-Control-Allow-Origin: *.", confidence: 0.85, finding_type: "cors_misconfiguration", validation_status: "conditional",
+      evidence_masked: "Access-Control-Allow-Origin: *", source: "http_headers",
+      impact: "Pode ampliar a superfície de leitura por sites externos se o endpoint retornar dados sensíveis.", attack_prerequisites: "Endpoint com dados não públicos e navegador de uma origem externa.",
+      recommended_fix: "Permita somente origens necessárias e separe endpoints públicos de autenticados.", retest_steps: "Classifique os dados retornados e teste uma origem não autorizada.", scope_compliance: "approved",
+    }];
+  }
+  return [];
+}
+
 async function claim() {
   const { data: candidate } = await db.from("scan_jobs").select("id").eq("status", "queued").order("created_at").limit(1).maybeSingle();
   if (!candidate) return null;
@@ -127,7 +151,10 @@ async function execute(job) {
     const headersText = [...response.headers.entries()].map(([name, value]) => `${name}: ${value}`).sort().join("\n");
     const body = (await response.text()).slice(0, 100_000);
     await progress(job, 55, "Analisando postura de segurança");
-    const rawFindings = job.profile === "llm_lab" ? [] : findingFromHeaders(response.headers, job.target_url);
+    const rawFindings = job.profile === "llm_lab" ? [] : [
+      ...findingFromHeaders(response.headers, job.target_url),
+      ...(job.profile === "api_validation" ? apiCorsFindings(response.headers, job.target_url) : []),
+    ];
     const { data: scan, error: scanError } = await db.from("scans").insert({ org_id: job.org_id, asset_id: job.asset_id, profile: job.profile === "llm_lab" ? "llm_redteam" : "passive_recon", engines: job.profile === "authenticated_web" ? ["playwright"] : ["custom_fuzzer"], status: "completed", progress: 100, started_at: new Date().toISOString(), finished_at: new Date().toISOString(), requested_by: job.requested_by }).select("id").single();
     if (scanError) throw scanError;
     const inventory = [...publicInventory(job.target_url, response, body, resolvedTarget.address), ...(job.profile === "api_validation" ? openApiInventory(job.configuration) : [])];
