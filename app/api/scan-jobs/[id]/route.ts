@@ -1,6 +1,15 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 
+export async function GET(_: Request, { params }: { params: Promise<{ id: string }> }) {
+  const { id } = await params;
+  const supabase = await createClient();
+  const { data, error } = await supabase.from("scan_jobs").select("id, status, progress, current_step, error_text").eq("id", id).maybeSingle();
+  if (error) return NextResponse.json({ error: error.message }, { status: 400 });
+  if (!data) return NextResponse.json({ error: "Job não encontrado." }, { status: 404 });
+  return NextResponse.json({ job: data });
+}
+
 export async function DELETE(_: Request, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   const supabase = await createClient();
