@@ -80,6 +80,25 @@ function publicInventory(target, response, body, address) {
   return observations;
 }
 
+function openApiInventory(configuration) {
+  const source = configuration?.openapi_spec;
+  if (typeof source !== "string" || source.length > 500_000) return [];
+  try {
+    const document = JSON.parse(source);
+    if (!document?.paths || typeof document.paths !== "object") return [];
+    const observations = [];
+    for (const [path, methods] of Object.entries(document.paths)) {
+      if (!path.startsWith("/") || typeof methods !== "object") continue;
+      for (const method of Object.keys(methods)) {
+        if (!["get", "post", "put", "patch", "delete", "head", "options"].includes(method.toLowerCase())) continue;
+        observations.push(["api_surface", `${method.toUpperCase()} ${path}`.slice(0, 240), "Declarado no OpenAPI enviado pelo operador", "openapi_import"]);
+        if (observations.length >= 200) return observations;
+      }
+    }
+    return observations;
+  } catch { return []; }
+}
+
 async function claim() {
   const { data: candidate } = await db.from("scan_jobs").select("id").eq("status", "queued").order("created_at").limit(1).maybeSingle();
   if (!candidate) return null;
@@ -111,7 +130,7 @@ async function execute(job) {
     const rawFindings = job.profile === "llm_lab" ? [] : findingFromHeaders(response.headers, job.target_url);
     const { data: scan, error: scanError } = await db.from("scans").insert({ org_id: job.org_id, asset_id: job.asset_id, profile: job.profile === "llm_lab" ? "llm_redteam" : "passive_recon", engines: job.profile === "authenticated_web" ? ["playwright"] : ["custom_fuzzer"], status: "completed", progress: 100, started_at: new Date().toISOString(), finished_at: new Date().toISOString(), requested_by: job.requested_by }).select("id").single();
     if (scanError) throw scanError;
-    const inventory = publicInventory(job.target_url, response, body, resolvedTarget.address);
+    const inventory = [...publicInventory(job.target_url, response, body, resolvedTarget.address), ...(job.profile === "api_validation" ? openApiInventory(job.configuration) : [])];
     await db.from("inventory_observations").upsert(inventory.map(([category, name, value_masked, source]) => ({ org_id: job.org_id, asset_id: job.asset_id, scan_id: scan.id, category, name, value_masked, source })), { onConflict: "asset_id,category,name,source" });
     const fingerprint = (finding) => createHash("sha256").update(`${job.asset_id}:${finding.title}:${finding.endpoint}`).digest("hex");
     for (const finding of rawFindings) {
