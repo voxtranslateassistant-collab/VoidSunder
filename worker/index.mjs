@@ -37,7 +37,18 @@ function findingFromHeaders(headers, target) {
   for (const [header, title, severity, cwe, remediation] of required) {
     if (!headers.get(header)) out.push({ title, severity, cwe, remediation, endpoint: target, summary: `O cabeçalho ${header} não foi encontrado na resposta.`, confidence: 0.95 });
   }
-  return out;
+  return out.map((finding) => ({
+    ...finding,
+    finding_type: "missing_security_header",
+    validation_status: "confirmed",
+    evidence_masked: finding.summary,
+    source: "http_headers",
+    impact: "Reduz uma camada de protecao do navegador; o impacto depende de uma falha complementar.",
+    attack_prerequisites: "Exige uma condicao adicional no ativo, como conteudo controlavel ou interceptacao de trafego.",
+    recommended_fix: finding.remediation,
+    retest_steps: `Solicite ${finding.endpoint} e confirme a presenca do cabecalho recomendado.`,
+    scope_compliance: "approved",
+  }));
 }
 
 async function claim() {
@@ -74,6 +85,20 @@ async function execute(job) {
     for (const finding of rawFindings) {
       const { data: saved, error } = await db.from("findings").upsert({ org_id: job.org_id, scan_id: scan.id, asset_id: job.asset_id, title: finding.title, severity: finding.severity, cwe: finding.cwe, engine: "custom_fuzzer", endpoint: finding.endpoint, summary: finding.summary, confidence: finding.confidence, fingerprint: fingerprint(finding) }, { onConflict: "asset_id,fingerprint" }).select("id").single();
       if (error) throw error;
+      if (saved) {
+        await db.from("findings").update({
+          finding_type: finding.finding_type,
+          validation_status: finding.validation_status,
+          evidence_masked: finding.evidence_masked,
+          evidence_hash: createHash("sha256").update(`${headersText}:${finding.title}`).digest("hex"),
+          source: finding.source,
+          impact: finding.impact,
+          attack_prerequisites: finding.attack_prerequisites,
+          recommended_fix: finding.recommended_fix,
+          retest_steps: finding.retest_steps,
+          scope_compliance: finding.scope_compliance,
+        }).eq("id", saved.id);
+      }
       if (saved) await db.from("evidence").insert({ finding_id: saved.id, kind: "http_transcript", label: "Resposta HTTP redigida", storage_path: `inline/${job.id}/${saved.id}.txt`, size_bytes: Buffer.byteLength(headersText) });
     }
     await progress(job, 85, "Guardando evidência redigida");
