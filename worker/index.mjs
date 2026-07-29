@@ -51,6 +51,35 @@ function findingFromHeaders(headers, target) {
   }));
 }
 
+function publicInventory(target, response, body, address) {
+  const targetUrl = new URL(target);
+  const observations = [
+    ["dns", "Hostname", targetUrl.hostname, "dns_lookup"],
+    ["dns", "Endereço resolvido", address, "dns_lookup"],
+    ["transport", "HTTP status", String(response.status), "http_response"],
+    ["technology", "Server", response.headers.get("server") || "não divulgado", "http_headers"],
+    ["technology", "X-Powered-By", response.headers.get("x-powered-by") || "não divulgado", "http_headers"],
+    ["route", targetUrl.pathname || "/", "Endpoint inicial autorizado", "target_url"],
+  ];
+  const contentType = response.headers.get("content-type") || "";
+  if (contentType) observations.push(["technology", "Content-Type", contentType.split(";")[0], "http_headers"]);
+  const generator = body.match(/<meta[^>]+name=["']generator["'][^>]+content=["']([^"']{1,120})/i)?.[1];
+  if (generator) observations.push(["technology", "Generator", generator, "html_meta"]);
+  const scriptUrls = new Set();
+  for (const match of body.matchAll(/<script[^>]+src=["']([^"']+)["']/gi)) {
+    try { const script = new URL(match[1], targetUrl); if (script.origin === targetUrl.origin) scriptUrls.add(script.pathname.slice(0, 240)); } catch { /* malformed public markup */ }
+    if (scriptUrls.size >= 30) break;
+  }
+  for (const path of scriptUrls) observations.push(["script", path, "JavaScript público referenciado", "html_script"]);
+  const routes = new Set();
+  for (const match of body.matchAll(/<(?:a|form)[^>]+(?:href|action)=["']([^"'#?][^"']*)["']/gi)) {
+    try { const route = new URL(match[1], targetUrl); if (route.origin === targetUrl.origin && /^\/(?!\/)/.test(route.pathname)) routes.add(route.pathname.slice(0, 240)); } catch { /* malformed public markup */ }
+    if (routes.size >= 50) break;
+  }
+  for (const path of routes) observations.push(["route", path, "Rota pública referenciada", "html_link"]);
+  return observations;
+}
+
 async function claim() {
   const { data: candidate } = await db.from("scan_jobs").select("id").eq("status", "queued").order("created_at").limit(1).maybeSingle();
   if (!candidate) return null;
@@ -68,6 +97,7 @@ async function execute(job) {
   try {
     await progress(job, 5, "Validando escopo e destino");
     await assertPublicTarget(job.target_url, job.assets, job.scopes);
+    const resolvedTarget = await lookup(new URL(job.target_url).hostname, { all: false });
     const cancelled = await db.from("scan_jobs").select("status").eq("id", job.id).single();
     if (cancelled.data?.status === "cancelled") return;
     await progress(job, 20, "Coletando resposta HTTP");
@@ -81,7 +111,7 @@ async function execute(job) {
     const rawFindings = job.profile === "llm_lab" ? [] : findingFromHeaders(response.headers, job.target_url);
     const { data: scan, error: scanError } = await db.from("scans").insert({ org_id: job.org_id, asset_id: job.asset_id, profile: job.profile === "llm_lab" ? "llm_redteam" : "passive_recon", engines: job.profile === "authenticated_web" ? ["playwright"] : ["custom_fuzzer"], status: "completed", progress: 100, started_at: new Date().toISOString(), finished_at: new Date().toISOString(), requested_by: job.requested_by }).select("id").single();
     if (scanError) throw scanError;
-    const inventory = [["transport", "HTTP status", String(response.status), "http_response"], ["technology", "Server", response.headers.get("server") || "não divulgado", "http_headers"], ["technology", "X-Powered-By", response.headers.get("x-powered-by") || "não divulgado", "http_headers"], ["route", new URL(job.target_url).pathname || "/", "Endpoint inicial autorizado", "target_url"]];
+    const inventory = publicInventory(job.target_url, response, body, resolvedTarget.address);
     await db.from("inventory_observations").upsert(inventory.map(([category, name, value_masked, source]) => ({ org_id: job.org_id, asset_id: job.asset_id, scan_id: scan.id, category, name, value_masked, source })), { onConflict: "asset_id,category,name,source" });
     const fingerprint = (finding) => createHash("sha256").update(`${job.asset_id}:${finding.title}:${finding.endpoint}`).digest("hex");
     for (const finding of rawFindings) {
