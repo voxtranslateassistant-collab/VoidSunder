@@ -12,6 +12,7 @@ import {
   Archive,
   FileText,
   ShieldCheck,
+  KeyRound,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -52,6 +53,7 @@ const NAV = [
     icon: BrainCircuit,
     desc: "Testa a segurança de modelos de IA (não de sites).",
   },
+  { href: "/integrations", label: "Integrações", icon: KeyRound, desc: "Chaves de provedores de IA protegidas no servidor." },
   {
     href: "/evidence",
     label: "Cofre de Provas",

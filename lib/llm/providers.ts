@@ -1,4 +1,5 @@
 import type { LlmProviderId } from "@/types";
+import { getStoredProviderKey, listStoredProviderIds } from "./provider-keys";
 
 // ------------------------------------------------------------
 // Clients reais dos provedores gratuitos.
@@ -38,14 +39,13 @@ export const PROVIDERS: Record<LlmProviderId, ProviderConfig> = {
   },
 };
 
-export function providerKey(id: LlmProviderId): string | undefined {
-  return process.env[PROVIDERS[id].envKey];
+export async function providerKey(id: LlmProviderId): Promise<string | undefined> {
+  return (await getStoredProviderKey(id)) ?? process.env[PROVIDERS[id].envKey];
 }
 
-export function configuredProviders(): LlmProviderId[] {
-  return (Object.keys(PROVIDERS) as LlmProviderId[]).filter((id) =>
-    Boolean(providerKey(id)),
-  );
+export async function configuredProviders(): Promise<LlmProviderId[]> {
+  const stored = await listStoredProviderIds().catch(() => [] as LlmProviderId[]);
+  return (Object.keys(PROVIDERS) as LlmProviderId[]).filter((id) => stored.includes(id) || Boolean(process.env[PROVIDERS[id].envKey]));
 }
 
 export interface ChatResult {
@@ -75,7 +75,7 @@ export async function chat(
   system: string,
   user: string,
 ): Promise<ChatResult> {
-  const key = providerKey(id);
+  const key = await providerKey(id);
   const cfg = PROVIDERS[id];
   const started = Date.now();
 

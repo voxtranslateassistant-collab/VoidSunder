@@ -13,7 +13,7 @@ export async function runRedTeam(): Promise<{
   error?: string;
   run?: LlmRun;
 }> {
-  const providers = configuredProviders();
+  const providers = await configuredProviders();
   if (providers.length === 0) {
     return {
       ok: false,

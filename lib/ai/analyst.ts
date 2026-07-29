@@ -13,17 +13,12 @@ Escreva em português do Brasil, técnico, direto e acionável.
 Nunca invente achados que não estão nos dados. Não forneça payloads de exploração prontos;
 descreva o risco e a correção. Baseie-se apenas nas evidências fornecidas.`;
 
-function pickProvider(): LlmProviderId | null {
-  const configured = configuredProviders();
-  return configured[0] ?? null;
-}
-
 /** Tenta cada provedor configurado em ordem; usa o próximo se um falhar (ex.: 429). */
 async function chatWithFallback(
   system: string,
   user: string,
 ): Promise<{ ok: boolean; text?: string; provider?: string; error?: string }> {
-  const providers = configuredProviders();
+  const providers = await configuredProviders();
   if (providers.length === 0) {
     return { ok: false, error: "Nenhum provedor de IA configurado (.env.local)." };
   }

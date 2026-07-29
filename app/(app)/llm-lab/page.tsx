@@ -7,7 +7,7 @@ export const metadata = { title: "Lab de IA" };
 export const dynamic = "force-dynamic";
 
 export default async function LlmLabPage() {
-  const configured = configuredProviders();
+  const configured = await configuredProviders();
   const providers = Object.values(PROVIDERS).map((p) => ({
     id: p.id,
     label: p.label,

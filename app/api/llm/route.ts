@@ -7,7 +7,7 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 export async function GET() {
-  const configured = configuredProviders();
+  const configured = await configuredProviders();
   const latest = await getLatestLlmRun();
   return NextResponse.json({
     providers: Object.values(PROVIDERS).map((p) => ({

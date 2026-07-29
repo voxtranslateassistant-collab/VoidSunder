@@ -1,0 +1,4 @@
+import { TopBar } from "@/components/layout/topbar";
+import { ProviderKeyManager } from "@/components/llm/provider-key-manager";
+export const metadata = { title: "Integrações" }; export const dynamic = "force-dynamic";
+export default function IntegrationsPage() { return <><TopBar title="Integrações de IA" subtitle="Chaves protegidas no servidor" /><main className="tactical-grid flex-1 overflow-y-auto"><div className="mx-auto max-w-4xl space-y-6 p-8"><div className="border border-ash-border bg-surface-1 p-4 text-sm text-fog-blue">Central de chaves preparada. Configure <code className="text-prism-cyan">LLM_KEY_ENCRYPTION_SECRET</code> no Vercel antes do primeiro cadastro. As chaves são aceitas exclusivamente pela rota autenticada e criptografadas com AES-256-GCM.</div><ProviderKeyManager /></div></main></>; }
