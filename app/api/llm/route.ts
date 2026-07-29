@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { runRedTeam } from "@/lib/llm/redteam";
 import { configuredProviders, PROVIDERS } from "@/lib/llm/providers";
-import { getLatestLlmRun } from "@/lib/store";
+import { ensureLlmAccess, getLatestLlmRun, persistLlmRun } from "@/lib/llm/runs";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -23,9 +23,19 @@ export async function GET() {
 }
 
 export async function POST() {
+  try {
+    await ensureLlmAccess();
+  } catch (error) {
+    return NextResponse.json({ error: error instanceof Error ? error.message : "Autenticação necessária." }, { status: 401 });
+  }
   const result = await runRedTeam();
   if (!result.ok) {
     return NextResponse.json({ error: result.error }, { status: 400 });
+  }
+  try {
+    await persistLlmRun(result.run!);
+  } catch (error) {
+    return NextResponse.json({ error: error instanceof Error ? error.message : "Não foi possível salvar a execução do Lab de IA." }, { status: 500 });
   }
   return NextResponse.json({ run: result.run });
 }

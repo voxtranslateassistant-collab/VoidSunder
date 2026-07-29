@@ -1,7 +1,7 @@
 import { TopBar } from "@/components/layout/topbar";
 import { LlmLab } from "@/components/llm/llm-lab";
 import { configuredProviders, PROVIDERS } from "@/lib/llm/providers";
-import { getLatestLlmRun } from "@/lib/store";
+import { getLatestLlmRun } from "@/lib/llm/runs";
 
 export const metadata = { title: "Lab de IA" };
 export const dynamic = "force-dynamic";

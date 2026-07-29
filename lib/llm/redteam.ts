@@ -2,7 +2,6 @@ import { randomUUID } from "crypto";
 import type { LlmProviderId, LlmProbeResult, LlmRun } from "@/types";
 import { chat, PROVIDERS, configuredProviders } from "./providers";
 import { PROBES } from "./probes";
-import { persistLlmRun } from "@/lib/store";
 
 /**
  * Executa a bateria contra TODOS os provedores configurados e cruza
@@ -54,6 +53,5 @@ export async function runRedTeam(): Promise<{
     results,
   };
 
-  await persistLlmRun(run);
   return { ok: true, run };
 }
