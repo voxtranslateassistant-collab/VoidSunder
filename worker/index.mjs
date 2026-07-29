@@ -91,4 +91,5 @@ async function execute(job) {
 
 async function loop() { const job = await claim(); if (job) await execute(job); }
 setInterval(() => loop().catch(console.error), pollMs);
+console.info(`AegisForge worker ativo: ${workerId}; intervalo: ${pollMs}ms`);
 loop().catch(console.error);
