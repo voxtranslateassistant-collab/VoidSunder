@@ -7,6 +7,7 @@ import {
   Radar,
   Bug,
   Boxes,
+  Network,
   BrainCircuit,
   Archive,
   FileText,
@@ -38,6 +39,12 @@ const NAV = [
     label: "Alvos",
     icon: Boxes,
     desc: "Inventário dos sites/APIs já escaneados e seu risco.",
+  },
+  {
+    href: "/inventory",
+    label: "Inventário",
+    icon: Network,
+    desc: "Tecnologias, rotas e superfícies confirmadas em scans autorizados.",
   },
   {
     href: "/llm-lab",
