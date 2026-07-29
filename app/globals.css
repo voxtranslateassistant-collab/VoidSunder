@@ -1,0 +1,198 @@
+@import "tailwindcss";
+
+/* ============================================================
+   AegisForge — DNA Vivid+Co (Obsidian + Prism)
+   ============================================================ */
+@theme {
+  /* --- Core palette --- */
+  --color-bone-white: #fffdf9;
+  --color-obsidian: #101010;
+  --color-graphite-veil: #495764;
+  --color-ash-border: #403f3f;
+  --color-fog-blue: #6f879c;
+  --color-pure-black: #000000;
+
+  /* --- Prism accents --- */
+  --color-prism-red: #ff2a2a;
+  --color-prism-cyan: #2a7fff;
+  --color-prism-lime: #2aff2a;
+
+  /* --- Derived surfaces (cinematic depth) --- */
+  --color-surface-0: #000000;
+  --color-surface-1: #0a0a0a;
+  --color-surface-2: #101010;
+  --color-surface-3: #161616;
+  --color-surface-4: #1d1d1d;
+
+  /* --- Severity scale --- */
+  --color-sev-critical: #ff2a2a;
+  --color-sev-high: #ff6b2a;
+  --color-sev-medium: #ffc22a;
+  --color-sev-low: #2a7fff;
+  --color-sev-info: #6f879c;
+
+  /* --- Typography --- */
+  --font-display: "Neue Montreal", "Inter", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+
+  --text-display: 136px;
+  --text-display--line-height: 1;
+  --text-display--letter-spacing: -2.72px;
+
+  --text-hero: 72px;
+  --text-hero--line-height: 1.02;
+  --text-hero--letter-spacing: -1.8px;
+
+  --text-title: 40px;
+  --text-title--line-height: 1.08;
+  --text-title--letter-spacing: -1px;
+
+  --text-micro: 11px;
+  --text-micro--line-height: 1.2;
+  --text-micro--letter-spacing: 1.2px;
+}
+
+@layer base {
+  * {
+    border-color: var(--color-ash-border);
+  }
+
+  html {
+    color-scheme: dark;
+  }
+
+  body {
+    background-color: var(--color-obsidian);
+    color: var(--color-bone-white);
+    font-family: var(--font-display);
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  ::selection {
+    background-color: var(--color-prism-cyan);
+    color: var(--color-pure-black);
+  }
+
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-track {
+    background: var(--color-surface-1);
+  }
+  ::-webkit-scrollbar-thumb {
+    background: var(--color-ash-border);
+    border: 2px solid var(--color-surface-1);
+    border-radius: 999px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: var(--color-graphite-veil);
+  }
+}
+
+@layer utilities {
+  /* Prism halo — assinatura visual do DNA */
+  .prism-glow {
+    position: relative;
+    isolation: isolate;
+  }
+  .prism-glow::after {
+    content: "";
+    position: absolute;
+    inset: -20px;
+    background: linear-gradient(45deg, #ff2a2a, #2a7fff, #2aff2a);
+    filter: blur(40px);
+    opacity: 0.15;
+    z-index: -1;
+    pointer-events: none;
+  }
+
+  /* Borda com refração prismática no hover */
+  .prism-edge {
+    position: relative;
+  }
+  .prism-edge::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    padding: 1px;
+    background: linear-gradient(120deg, #ff2a2a, #2a7fff, #2aff2a);
+    -webkit-mask:
+      linear-gradient(#000 0 0) content-box,
+      linear-gradient(#000 0 0);
+    -webkit-mask-composite: xor;
+    mask-composite: exclude;
+    opacity: 0;
+    transition: opacity 0.4s ease;
+    pointer-events: none;
+  }
+  .prism-edge:hover::before {
+    opacity: 0.6;
+  }
+
+  /* Grid técnico de fundo — textura de sala de operações */
+  .tactical-grid {
+    background-image:
+      linear-gradient(to right, rgba(64, 63, 63, 0.35) 1px, transparent 1px),
+      linear-gradient(to bottom, rgba(64, 63, 63, 0.35) 1px, transparent 1px);
+    background-size: 48px 48px;
+  }
+
+  /* Varredura — usado em scans ativos */
+  .scanline::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(
+      to bottom,
+      transparent 0%,
+      rgba(42, 127, 255, 0.06) 50%,
+      transparent 100%
+    );
+    animation: scan 3.2s linear infinite;
+    pointer-events: none;
+  }
+
+  .text-micro-caps {
+    font-size: 11px;
+    line-height: 1.2;
+    letter-spacing: 1.2px;
+    text-transform: uppercase;
+  }
+
+  .animate-pulse-dot {
+    animation: pulse-dot 2s ease-in-out infinite;
+  }
+}
+
+@keyframes scan {
+  0% {
+    transform: translateY(-100%);
+  }
+  100% {
+    transform: translateY(100%);
+  }
+}
+
+@keyframes pulse-dot {
+  0%,
+  100% {
+    opacity: 1;
+    box-shadow: 0 0 0 0 currentColor;
+  }
+  50% {
+    opacity: 0.6;
+    box-shadow: 0 0 0 4px transparent;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
