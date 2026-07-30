@@ -66,7 +66,7 @@ export function ScanQueue({ initialJobs }: { initialJobs: QueueJob[] }) {
                 <Td><Link href={`/scans/${job.id}`} className="text-sm transition-colors hover:text-prism-cyan">{asset?.name ?? "Ativo"}</Link><p className="mt-0.5 max-w-xl truncate font-mono text-xs text-graphite-veil">{job.target_url}</p></Td>
                 <Td className="text-fog-blue">{PROFILE_LABEL[job.profile]}</Td>
                 <Td><StatusDot status={job.status} />{job.error_text && <p className="mt-1 max-w-48 text-xs text-prism-red">{job.error_text}</p>}</Td>
-                <Td><div className="w-36">{active ? <div className="flex items-center gap-3"><DotWave /><span className="text-xs text-prism-cyan">Em processamento</span></div> : <div className="h-1.5 overflow-hidden bg-surface-3"><div className="h-full bg-prism-cyan transition-all" style={{ width: `${job.progress}%` }} /></div>}<p className="mt-1 text-xs text-graphite-veil">{job.current_step ?? `${job.progress}%`}</p></div></Td>
+                <Td><div className="w-36">{active ? <div className="flex h-4 items-center"><DotWave /></div> : <div className="h-1.5 overflow-hidden bg-surface-3"><div className="h-full bg-prism-cyan transition-all" style={{ width: `${job.progress}%` }} /></div>}<p className="mt-1 text-xs text-graphite-veil">{job.current_step ?? `${job.progress}%`}</p></div></Td>
                 <Td className="text-right text-xs text-graphite-veil">{formatRelativeTime(job.created_at)}</Td>
               </Tr>
             );
