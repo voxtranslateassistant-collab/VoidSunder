@@ -36,5 +36,33 @@ export async function getOperationalEvidence(): Promise<Evidence[]> {
 }
 
 export async function getOperationalEvidenceByFinding(findingId: string) {
-  return (await getOperationalEvidence()).filter((evidence) => evidence.findingId === findingId);
+  const supabase = await createClient();
+  const mapArtifact = (artifact: { id: string; finding_id: string | null; job_id: string | null; kind: string; label: string; redacted_preview: string | null; size_bytes: number | string | null; captured_at: string }) => ({
+    id: artifact.id,
+    findingId: artifact.finding_id ?? findingId,
+    scanId: artifact.job_id ?? "",
+    kind: artifact.kind === "http_response" ? "http_response" : "config",
+    label: artifact.label,
+    content: artifact.redacted_preview ?? "Evidência privada disponível no cofre.",
+    sizeBytes: Number(artifact.size_bytes ?? 0),
+    capturedAt: artifact.captured_at,
+  } as Evidence);
+
+  const { data: directlyLinked, error: directError } = await supabase
+    .from("evidence_artifacts").select("*").eq("finding_id", findingId).order("captured_at", { ascending: false });
+  if (directError) throw directError;
+  if (directlyLinked?.length) return directlyLinked.map(mapArtifact);
+
+  const { data: finding, error: findingError } = await supabase
+    .from("findings").select("scan_id").eq("id", findingId).maybeSingle();
+  if (findingError) throw findingError;
+  if (!finding?.scan_id) return [];
+  const { data: job, error: jobError } = await supabase
+    .from("scan_jobs").select("id").contains("configuration", { legacy_scan_id: finding.scan_id }).limit(1).maybeSingle();
+  if (jobError) throw jobError;
+  if (!job) return [];
+  const { data: jobArtifacts, error: artifactError } = await supabase
+    .from("evidence_artifacts").select("*").eq("job_id", job.id).order("captured_at", { ascending: false });
+  if (artifactError) throw artifactError;
+  return (jobArtifacts ?? []).map(mapArtifact);
 }

@@ -186,6 +186,7 @@ async function execute(job) {
     const inventory = [...publicInventory(job.target_url, response, body, resolvedTarget.address), ...(job.profile === "api_validation" ? openApiInventory(job.configuration) : []), ...(job.profile === "api_validation" ? postmanInventory(job.configuration) : [])];
     await db.from("inventory_observations").upsert(inventory.map(([category, name, value_masked, source]) => ({ org_id: job.org_id, asset_id: job.asset_id, scan_id: scan.id, category, name, value_masked, source })), { onConflict: "asset_id,category,name,source" });
     const fingerprint = (finding) => createHash("sha256").update(`${job.asset_id}:${finding.title}:${finding.endpoint}`).digest("hex");
+    const savedFindings = [];
     for (const finding of rawFindings) {
       const { data: saved, error } = await db.from("findings").upsert({ org_id: job.org_id, scan_id: scan.id, asset_id: job.asset_id, title: finding.title, severity: finding.severity, cwe: finding.cwe, engine: "custom_fuzzer", endpoint: finding.endpoint, summary: finding.summary, confidence: finding.confidence, fingerprint: fingerprint(finding) }, { onConflict: "scan_id,fingerprint" }).select("id").single();
       if (error) throw error;
@@ -203,7 +204,7 @@ async function execute(job) {
           scope_compliance: finding.scope_compliance,
         }).eq("id", saved.id);
       }
-      if (saved) await db.from("evidence").insert({ finding_id: saved.id, kind: "http_transcript", label: "Resposta HTTP redigida", storage_path: `inline/${job.id}/${saved.id}.txt`, size_bytes: Buffer.byteLength(headersText) });
+      if (saved) savedFindings.push(saved.id);
     }
     await progress(job, 85, "Guardando evidência redigida");
     const content = `HTTP ${response.status}\n${headersText}\n\n${body.replace(/(authorization|cookie|token)\s*[:=]\s*[^\s;]+/gi, "$1: [REDACTED]").slice(0, 20_000)}`;
@@ -211,6 +212,7 @@ async function execute(job) {
     const upload = await db.storage.from("evidence-vault").upload(path, Buffer.from(content), { contentType: "text/plain", upsert: false });
     if (upload.error) throw upload.error;
     await db.from("evidence_artifacts").insert({ org_id: job.org_id, job_id: job.id, kind: "http_response", label: "Resposta HTTP redigida", storage_path: path, sha256: createHash("sha256").update(content).digest("hex"), size_bytes: Buffer.byteLength(content), redacted_preview: content.slice(0, 500) });
+    if (savedFindings.length) await db.from("evidence").insert(savedFindings.map((finding_id) => ({ finding_id, kind: "http_transcript", label: "Resposta HTTP redigida", storage_path: path, size_bytes: Buffer.byteLength(content) })));
     await db.from("scan_jobs").update({ status: "completed", progress: 100, current_step: "Concluído", finished_at: new Date().toISOString(), configuration: { ...job.configuration, legacy_scan_id: scan.id } }).eq("id", job.id);
     await db.from("audit_events").insert({ org_id: job.org_id, actor_id: job.requested_by, action: "scan_job.completed", entity_type: "scan_job", entity_id: job.id, metadata: { findings: rawFindings.length } });
   } catch (error) {
