@@ -101,6 +101,45 @@ function openApiInventory(configuration) {
   } catch { return []; }
 }
 
+function openApiContractFindings(configuration, target) {
+  const source = configuration?.openapi_spec;
+  if (typeof source !== "string" || source.length > 500_000) return [];
+  try {
+    const document = JSON.parse(source);
+    if (!document?.paths || typeof document.paths !== "object" || Array.isArray(document.item)) return [];
+    const globalSecurity = Array.isArray(document.security) && document.security.length > 0;
+    const findings = [];
+    const methodsAllowed = ["get", "post", "put", "patch", "delete", "head", "options"];
+    for (const [path, definition] of Object.entries(document.paths)) {
+      if (!path.startsWith("/") || !definition || typeof definition !== "object") continue;
+      for (const [method, operation] of Object.entries(definition)) {
+        if (!methodsAllowed.includes(method.toLowerCase()) || !operation || typeof operation !== "object") continue;
+        const endpoint = new URL(path, target).toString();
+        const isWrite = ["post", "put", "patch", "delete"].includes(method.toLowerCase());
+        const hasOperationSecurity = Array.isArray(operation.security) ? operation.security.length > 0 : globalSecurity;
+        if (isWrite && !hasOperationSecurity) findings.push({
+          title: "Autenticação não declarada para operação mutável", severity: "medium", cwe: "CWE-306", endpoint,
+          summary: `${method.toUpperCase()} ${path} não declara requisito de segurança no contrato OpenAPI.`, confidence: 0.72,
+          finding_type: "openapi_authentication_review", validation_status: "conditional", evidence_masked: `${method.toUpperCase()} ${path}; security: ausente`, source: "openapi_import",
+          impact: "Uma operação de alteração pode ficar exposta se a implementação também não exigir autenticação.", attack_prerequisites: "A implementação do endpoint deve aceitar a operação sem um controle de autenticação equivalente.",
+          recommended_fix: "Declare o esquema de segurança no OpenAPI e confirme no gateway e no servidor que a autenticação é exigida.", retest_steps: "Revise o contrato e execute uma chamada de teste autorizada sem credenciais, esperando 401 ou 403.", scope_compliance: "approved",
+        });
+        const responseCodes = operation.responses && typeof operation.responses === "object" ? Object.keys(operation.responses) : [];
+        const hasErrorResponse = responseCodes.some((code) => ["400", "401", "403", "422", "429", "default"].includes(code));
+        if (isWrite && !hasErrorResponse) findings.push({
+          title: "Resposta de erro não documentada para operação mutável", severity: "low", cwe: "CWE-209", endpoint,
+          summary: `${method.toUpperCase()} ${path} não documenta respostas de erro comuns no contrato OpenAPI.`, confidence: 0.68,
+          finding_type: "openapi_error_handling_review", validation_status: "conditional", evidence_masked: `${method.toUpperCase()} ${path}; responses: ${responseCodes.join(", ") || "ausentes"}`, source: "openapi_import",
+          impact: "Contratos incompletos dificultam o tratamento seguro de falhas e a integração de clientes.", attack_prerequisites: "A implementação precisa retornar erros não padronizados ou revelar detalhes indevidos.",
+          recommended_fix: "Documente respostas 400, 401, 403, 422 e 429 relevantes, com mensagens seguras e sem detalhes internos.", retest_steps: "Compare respostas reais de teste autorizado com o contrato e confirme mensagens genéricas.", scope_compliance: "approved",
+        });
+        if (findings.length >= 40) return findings;
+      }
+    }
+    return findings;
+  } catch { return []; }
+}
+
 function postmanInventory(configuration) {
   const source = configuration?.openapi_spec;
   if (typeof source !== "string" || source.length > 500_000) return [];
@@ -206,6 +245,7 @@ async function execute(job) {
       ...findingFromHeaders(response.headers, job.target_url),
       ...(job.profile === "api_validation" ? apiCorsFindings(response.headers, job.target_url) : []),
       ...(job.profile === "api_validation" ? apiOperationalFindings(response.headers, job.target_url) : []),
+      ...(job.profile === "api_validation" ? openApiContractFindings(job.configuration, job.target_url) : []),
     ];
     const { data: scan, error: scanError } = await db.from("scans").insert({ org_id: job.org_id, asset_id: job.asset_id, profile: job.profile === "llm_lab" ? "llm_redteam" : "passive_recon", engines: job.profile === "authenticated_web" ? ["playwright"] : ["custom_fuzzer"], status: "completed", progress: 100, started_at: new Date().toISOString(), finished_at: new Date().toISOString(), requested_by: job.requested_by }).select("id").single();
     if (scanError) throw scanError;
