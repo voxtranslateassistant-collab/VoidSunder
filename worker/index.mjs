@@ -210,6 +210,53 @@ function postmanInventory(configuration) {
   } catch { return []; }
 }
 
+function declaredSafeGetRoutes(configuration, target) {
+  const source = configuration?.openapi_spec;
+  if (typeof source !== "string" || source.length > 500_000) return [];
+  try {
+    const document = JSON.parse(source);
+    const targetUrl = new URL(target);
+    const routes = new Set();
+    const add = (rawPath, method) => {
+      if (method?.toLowerCase() !== "get" || typeof rawPath !== "string" || rawPath.includes("{") || rawPath.includes("}")) return;
+      const endpoint = new URL(rawPath, targetUrl);
+      if (endpoint.origin === targetUrl.origin && !endpoint.search) routes.add(endpoint.toString());
+    };
+    if (document?.paths && typeof document.paths === "object" && !Array.isArray(document.item)) {
+      for (const [path, definition] of Object.entries(document.paths)) {
+        if (!definition || typeof definition !== "object") continue;
+        for (const method of Object.keys(definition)) add(path, method);
+      }
+    }
+    const walk = (items) => { for (const item of items ?? []) {
+      if (Array.isArray(item.item)) walk(item.item);
+      const request = item.request;
+      const rawUrl = typeof request?.url === "string" ? request.url : request?.url?.raw;
+      if (typeof rawUrl === "string") add(rawUrl, request?.method);
+    }};
+    if (Array.isArray(document?.item)) walk(document.item);
+    return [...routes].slice(0, 20);
+  } catch { return []; }
+}
+
+async function validateDeclaredGetRoutes(configuration, target) {
+  const routes = declaredSafeGetRoutes(configuration, target);
+  const results = [];
+  for (const endpoint of routes) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 6_000);
+    try {
+      const response = await fetch(endpoint, { method: "GET", redirect: "manual", signal: controller.signal, headers: { "User-Agent": "AegisForge-Worker/1.1 (+authorized-api-validation)" } });
+      results.push({ endpoint, status: response.status, contentType: response.headers.get("content-type") || "não divulgado" });
+    } catch (error) {
+      results.push({ endpoint, status: null, contentType: error instanceof Error ? error.message.slice(0, 160) : "falha de conexão" });
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  return results;
+}
+
 function apiCorsFindings(headers, target) {
   const origin = headers.get("access-control-allow-origin");
   const credentials = headers.get("access-control-allow-credentials");
@@ -289,15 +336,24 @@ async function execute(job) {
     const headersText = [...response.headers.entries()].map(([name, value]) => `${name}: ${value}`).sort().join("\n");
     const body = (await response.text()).slice(0, 100_000);
     await progress(job, 55, "Analisando postura de segurança");
+    const apiRouteResults = job.profile === "api_validation" ? await validateDeclaredGetRoutes(job.configuration, effectiveTarget) : [];
     const rawFindings = job.profile === "llm_lab" ? [] : [
       ...findingFromHeaders(response.headers, effectiveTarget),
       ...(job.profile === "api_validation" ? apiCorsFindings(response.headers, effectiveTarget) : []),
       ...(job.profile === "api_validation" ? apiOperationalFindings(response.headers, effectiveTarget) : []),
       ...(job.profile === "api_validation" ? openApiContractFindings(job.configuration, effectiveTarget) : []),
+      ...apiRouteResults.filter((route) => typeof route.status === "number" && route.status >= 500).map((route) => ({
+        title: "Endpoint de API retornou erro de servidor", severity: "medium", cwe: "CWE-209", endpoint: route.endpoint,
+        summary: `GET autorizado recebeu HTTP ${route.status}.`, confidence: 0.9, finding_type: "api_server_error", validation_status: "confirmed",
+        evidence_masked: `GET ${new URL(route.endpoint).pathname}; HTTP ${route.status}`, source: "api_route_validation",
+        impact: "Erros 5xx podem indicar indisponibilidade ou tratamento inadequado de exceções para consumidores da API.", attack_prerequisites: "Uma chamada GET permitida ao endpoint declarado no contrato.",
+        recommended_fix: "Revise logs internos, tratamento de exceções e contrato de resposta do endpoint.", retest_steps: "Repita a chamada GET autorizada após a correção e confirme uma resposta esperada sem erro 5xx.", scope_compliance: "approved",
+      })),
     ];
     const { data: scan, error: scanError } = await db.from("scans").insert({ org_id: job.org_id, asset_id: job.asset_id, profile: job.profile === "llm_lab" ? "llm_redteam" : "passive_recon", engines: job.profile === "authenticated_web" ? ["playwright"] : ["custom_fuzzer"], status: "completed", progress: 100, started_at: new Date().toISOString(), finished_at: new Date().toISOString(), requested_by: job.requested_by }).select("id").single();
     if (scanError) throw scanError;
-    const inventory = [...publicInventory(effectiveTarget, response, body, resolvedAddresses.join(", ")), ...(redirect ? [["transport", "Redirecionamento validado", redirect, "http_redirect"]] : []), ...(job.profile === "api_validation" ? openApiInventory(job.configuration) : []), ...(job.profile === "api_validation" ? postmanInventory(job.configuration) : [])];
+    const routeObservations = apiRouteResults.map((route) => ["api_validation", `GET ${new URL(route.endpoint).pathname}`, route.status === null ? `Falha controlada: ${route.contentType}` : `HTTP ${route.status}; ${route.contentType.split(";")[0]}`, "api_route_validation"]);
+    const inventory = [...publicInventory(effectiveTarget, response, body, resolvedAddresses.join(", ")), ...(redirect ? [["transport", "Redirecionamento validado", redirect, "http_redirect"]] : []), ...(job.profile === "api_validation" ? openApiInventory(job.configuration) : []), ...(job.profile === "api_validation" ? postmanInventory(job.configuration) : []), ...routeObservations];
     await db.from("inventory_observations").upsert(inventory.map(([category, name, value_masked, source]) => ({ org_id: job.org_id, asset_id: job.asset_id, scan_id: scan.id, category, name, value_masked, source })), { onConflict: "asset_id,category,name,source" });
     const fingerprint = (finding) => createHash("sha256").update(`${job.asset_id}:${finding.title}:${finding.endpoint}`).digest("hex");
     const savedFindings = [];
