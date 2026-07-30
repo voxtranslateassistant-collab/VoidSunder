@@ -123,6 +123,12 @@ function apiCorsFindings(headers, target) {
   return [];
 }
 
+function apiOperationalFindings(headers, target) {
+  const rateHeaders = ["ratelimit-limit", "x-ratelimit-limit", "x-rate-limit-limit", "retry-after"];
+  if (!rateHeaders.some((name) => headers.has(name))) return [{ title: "Rate limit não evidenciado", severity: "low", cwe: "CWE-770", remediation: "Implemente limitação por identidade/IP e documente limites de consumo da API.", endpoint: target, summary: "A resposta não expôs indicadores de rate limit; isso não confirma ausência de proteção.", confidence: 0.55, finding_type: "rate_limit_review", validation_status: "conditional", evidence_masked: "Nenhum cabeçalho comum de rate limit foi observado.", source: "http_headers", impact: "Sem controles adequados, endpoints podem sofrer consumo excessivo e degradação de serviço.", attack_prerequisites: "Volume repetido de requisições contra um endpoint sem controle efetivo.", recommended_fix: "Defina limites, alertas e resposta 429 para abuso.", retest_steps: "Valide a política de limite com tráfego de teste autorizado e observe resposta 429.", scope_compliance: "approved" }];
+  return [];
+}
+
 async function claim() {
   const { data: candidate } = await db.from("scan_jobs").select("id").eq("status", "queued").order("created_at").limit(1).maybeSingle();
   if (!candidate) return null;
@@ -154,6 +160,7 @@ async function execute(job) {
     const rawFindings = job.profile === "llm_lab" ? [] : [
       ...findingFromHeaders(response.headers, job.target_url),
       ...(job.profile === "api_validation" ? apiCorsFindings(response.headers, job.target_url) : []),
+      ...(job.profile === "api_validation" ? apiOperationalFindings(response.headers, job.target_url) : []),
     ];
     const { data: scan, error: scanError } = await db.from("scans").insert({ org_id: job.org_id, asset_id: job.asset_id, profile: job.profile === "llm_lab" ? "llm_redteam" : "passive_recon", engines: job.profile === "authenticated_web" ? ["playwright"] : ["custom_fuzzer"], status: "completed", progress: 100, started_at: new Date().toISOString(), finished_at: new Date().toISOString(), requested_by: job.requested_by }).select("id").single();
     if (scanError) throw scanError;
