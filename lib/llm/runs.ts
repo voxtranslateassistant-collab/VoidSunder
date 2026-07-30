@@ -30,11 +30,14 @@ export async function persistLlmRun(run: LlmRun): Promise<void> {
 }
 
 export async function getLatestLlmRun(): Promise<LlmRun | undefined> {
+  return (await getRecentLlmRuns(1))[0];
+}
+
+export async function getRecentLlmRuns(limit = 6): Promise<LlmRun[]> {
   const orgId = await currentOrgId();
-  if (!orgId) return undefined;
+  if (!orgId) return [];
   const supabase = await createClient();
-  const { data, error } = await supabase.from("llm_runs").select("id, providers, results, started_at").eq("org_id", orgId).order("started_at", { ascending: false }).limit(1).maybeSingle();
+  const { data, error } = await supabase.from("llm_runs").select("id, providers, results, started_at").eq("org_id", orgId).order("started_at", { ascending: false }).limit(Math.min(Math.max(limit, 1), 12));
   if (error) throw error;
-  if (!data) return undefined;
-  return { id: data.id, providers: data.providers as LlmProviderId[], results: data.results as LlmProbeResult[], startedAt: data.started_at };
+  return (data ?? []).map((run) => ({ id: run.id, providers: run.providers as LlmProviderId[], results: run.results as LlmProbeResult[], startedAt: run.started_at }));
 }

@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { BrainCircuit, Loader2, CheckCircle2, XCircle, Ban, ExternalLink } from "lucide-react";
+import { BrainCircuit, Loader2, CheckCircle2, XCircle, Ban, ExternalLink, History } from "lucide-react";
 
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -88,11 +88,14 @@ function ConsensusNetwork({ providers, active }: { providers: ProviderStatus[]; 
 export function LlmLab({
   providers,
   initialRun,
+  history,
 }: {
   providers: ProviderStatus[];
   initialRun: LlmRun | null;
+  history: LlmRun[];
 }) {
   const [run, setRun] = useState<LlmRun | null>(initialRun);
+  const [runs, setRuns] = useState<LlmRun[]>(history);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -108,6 +111,7 @@ export function LlmLab({
         setError(data.error ?? "Falha ao executar.");
       } else {
         setRun(data.run);
+        setRuns((current) => [data.run, ...current.filter((item) => item.id !== data.run.id)].slice(0, 6));
       }
     } catch {
       setError("Erro de rede ao contatar o servidor.");
@@ -218,6 +222,13 @@ export function LlmLab({
         <div className="border border-prism-red/40 bg-prism-red/10 p-3 text-xs text-prism-red">
           {error}
         </div>
+      )}
+
+      {runs.length > 1 && (
+        <Card>
+          <CardHeader><CardTitle className="flex items-center gap-2"><History className="size-4 text-prism-cyan" />Histórico recente do Lab</CardTitle><span className="text-xs text-graphite-veil">Selecione uma execução para comparar os resultados.</span></CardHeader>
+          <CardContent className="flex flex-wrap gap-2">{runs.map((item) => <button key={item.id} type="button" onClick={() => setRun(item)} className={`border px-3 py-2 text-left text-xs transition-colors ${run?.id === item.id ? "border-prism-cyan bg-prism-cyan/10 text-bone-white" : "border-ash-border text-fog-blue hover:border-prism-cyan/60"}`}><span className="block font-medium">{new Date(item.startedAt).toLocaleString("pt-BR")}</span><span className="mt-1 block text-graphite-veil">{item.providers.length} modelo{item.providers.length === 1 ? "" : "s"} · {item.results.filter((result) => result.ok).length} respostas</span></button>)}</CardContent>
+        </Card>
       )}
 
       {/* Matriz cruzada */}

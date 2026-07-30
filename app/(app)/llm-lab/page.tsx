@@ -1,7 +1,7 @@
 import { TopBar } from "@/components/layout/topbar";
 import { LlmLab } from "@/components/llm/llm-lab";
 import { configuredProviders, PROVIDERS } from "@/lib/llm/providers";
-import { getLatestLlmRun } from "@/lib/llm/runs";
+import { getRecentLlmRuns } from "@/lib/llm/runs";
 
 export const metadata = { title: "Lab de IA" };
 export const dynamic = "force-dynamic";
@@ -16,7 +16,7 @@ export default async function LlmLabPage() {
     envKey: p.envKey,
     configured: configured.includes(p.id),
   }));
-  const latest = (await getLatestLlmRun()) ?? null;
+  const history = await getRecentLlmRuns();
 
   return (
     <>
@@ -35,7 +35,7 @@ export default async function LlmLabPage() {
             Cada modelo é testado à parte: um símbolo ⊘ significa que aquele
             provedor deu erro (ex.: cota esgotada), não que o teste falhou.
           </div>
-          <LlmLab providers={providers} initialRun={latest} />
+          <LlmLab providers={providers} initialRun={history[0] ?? null} history={history} />
         </div>
       </main>
     </>
