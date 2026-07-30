@@ -187,7 +187,7 @@ async function execute(job) {
     await db.from("inventory_observations").upsert(inventory.map(([category, name, value_masked, source]) => ({ org_id: job.org_id, asset_id: job.asset_id, scan_id: scan.id, category, name, value_masked, source })), { onConflict: "asset_id,category,name,source" });
     const fingerprint = (finding) => createHash("sha256").update(`${job.asset_id}:${finding.title}:${finding.endpoint}`).digest("hex");
     for (const finding of rawFindings) {
-      const { data: saved, error } = await db.from("findings").upsert({ org_id: job.org_id, scan_id: scan.id, asset_id: job.asset_id, title: finding.title, severity: finding.severity, cwe: finding.cwe, engine: "custom_fuzzer", endpoint: finding.endpoint, summary: finding.summary, confidence: finding.confidence, fingerprint: fingerprint(finding) }, { onConflict: "asset_id,fingerprint" }).select("id").single();
+      const { data: saved, error } = await db.from("findings").upsert({ org_id: job.org_id, scan_id: scan.id, asset_id: job.asset_id, title: finding.title, severity: finding.severity, cwe: finding.cwe, engine: "custom_fuzzer", endpoint: finding.endpoint, summary: finding.summary, confidence: finding.confidence, fingerprint: fingerprint(finding) }, { onConflict: "scan_id,fingerprint" }).select("id").single();
       if (error) throw error;
       if (saved) {
         await db.from("findings").update({

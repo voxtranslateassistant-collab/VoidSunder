@@ -10,10 +10,34 @@ export const JOB_PROFILE_LABEL: Record<JobProfile, string> = {
   llm_lab: "Laboratório de IA",
 };
 
+type JobFinding = {
+  id: string;
+  title: string;
+  severity: "critical" | "high" | "medium" | "low" | "info";
+  status: string;
+  cwe: string | null;
+  cvss: number | null;
+  engine: string;
+  endpoint: string | null;
+  summary: string | null;
+  detected_at: string;
+};
+
+export type RetestComparison = {
+  originalJobId: string;
+  resolved: JobFinding[];
+  retained: JobFinding[];
+  introduced: JobFinding[];
+};
+
 function targetHost(target: string) {
   const url = new URL(/^https?:\/\//i.test(target) ? target : `https://${target}`);
   if (url.protocol !== "https:" && url.protocol !== "http:") throw new Error("Apenas URLs HTTP(S) são aceitas.");
   return { url: url.toString(), host: url.hostname.toLowerCase() };
+}
+
+function findingKey(finding: Pick<JobFinding, "title" | "endpoint">) {
+  return `${finding.title.trim().toLowerCase()}|${(finding.endpoint ?? "").trim().toLowerCase()}`;
 }
 
 export async function listJobs() {
@@ -35,15 +59,41 @@ export async function getJobDetail(id: string) {
     .maybeSingle();
   if (error) throw error;
   if (!job) return null;
-  const scanId = (job.configuration as { legacy_scan_id?: string } | null)?.legacy_scan_id;
-  if (!scanId) return { job, findings: [] };
-  const { data: findings, error: findingsError } = await supabase
-    .from("findings")
-    .select("id, title, severity, status, cwe, cvss, engine, endpoint, summary, detected_at")
-    .eq("scan_id", scanId)
-    .order("detected_at", { ascending: false });
-  if (findingsError) throw findingsError;
-  return { job, findings: findings ?? [] };
+
+  const getFindingsForScan = async (scanId?: string) => {
+    if (!scanId) return [] as JobFinding[];
+    const { data, error: findingsError } = await supabase
+      .from("findings")
+      .select("id, title, severity, status, cwe, cvss, engine, endpoint, summary, detected_at")
+      .eq("scan_id", scanId)
+      .order("detected_at", { ascending: false });
+    if (findingsError) throw findingsError;
+    return (data ?? []) as JobFinding[];
+  };
+
+  const configuration = (job.configuration ?? {}) as { legacy_scan_id?: string; retest_of?: string };
+  const findings = await getFindingsForScan(configuration.legacy_scan_id);
+  if (!configuration.retest_of) return { job, findings, retestComparison: null };
+
+  const { data: originalJob, error: originalError } = await supabase
+    .from("scan_jobs")
+    .select("id, configuration")
+    .eq("id", configuration.retest_of)
+    .maybeSingle();
+  if (originalError) throw originalError;
+  if (!originalJob) return { job, findings, retestComparison: null };
+
+  const originalConfiguration = (originalJob.configuration ?? {}) as { legacy_scan_id?: string };
+  const originalFindings = await getFindingsForScan(originalConfiguration.legacy_scan_id);
+  const originalByKey = new Map(originalFindings.map((finding) => [findingKey(finding), finding]));
+  const currentByKey = new Map(findings.map((finding) => [findingKey(finding), finding]));
+  const retestComparison: RetestComparison = {
+    originalJobId: originalJob.id,
+    resolved: originalFindings.filter((finding) => !currentByKey.has(findingKey(finding))),
+    retained: findings.filter((finding) => originalByKey.has(findingKey(finding))),
+    introduced: findings.filter((finding) => !originalByKey.has(findingKey(finding))),
+  };
+  return { job, findings, retestComparison };
 }
 
 export async function getOperationalOverview() {
