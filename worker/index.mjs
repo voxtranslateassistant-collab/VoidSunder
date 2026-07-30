@@ -25,8 +25,59 @@ async function assertPublicTarget(target, asset, scope) {
     try { const allowedUrl = new URL(value); return parsed.origin === allowedUrl.origin; } catch { return false; }
   });
   if (!allowed || parsed.origin !== new URL(asset.target).origin) throw new Error("Destino fora do escopo aprovado.");
-  const address = await lookup(parsed.hostname, { all: false });
-  if (isPrivateIp(address.address)) throw new Error("Destinos internos ou reservados não são permitidos.");
+  const addresses = await lookup(parsed.hostname, { all: true });
+  if (!addresses.length) throw new Error("O DNS do destino não retornou endereços públicos.");
+  if (addresses.some(({ address }) => isPrivateIp(address))) throw new Error("Destinos internos ou reservados não são permitidos.");
+  return addresses.map(({ address }) => address);
+}
+
+async function fetchAuthorizedTarget(target) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 12_000);
+  try {
+    const response = await fetch(target, {
+      redirect: "manual",
+      signal: controller.signal,
+      headers: { "User-Agent": "AegisForge-Worker/1.1 (+authorized-validation)" },
+    });
+    const location = response.headers.get("location");
+    if (response.status >= 300 && response.status < 400 && location) {
+      const destination = new URL(location, target);
+      const source = new URL(target);
+      if (destination.origin !== source.origin) throw new Error(`Redirecionamento bloqueado por sair do escopo aprovado: ${destination.origin}`);
+      const redirected = await fetch(destination, {
+        redirect: "error",
+        signal: controller.signal,
+        headers: { "User-Agent": "AegisForge-Worker/1.1 (+authorized-validation)" },
+      });
+      return { response: redirected, effectiveTarget: destination.toString(), redirect: destination.toString() };
+    }
+    return { response, effectiveTarget: target, redirect: null };
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : "Erro de conexão desconhecido";
+    throw new Error(`Não foi possível obter resposta HTTP autorizada: ${reason}`, { cause: error });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function saveFailureDiagnostic(job, target, addresses, error) {
+  const detail = error instanceof Error ? error.message : "Erro inesperado";
+  const content = [
+    "Diagnóstico de conectividade VoidSunder",
+    `Alvo autorizado: ${target}`,
+    `DNS público: ${addresses.join(", ") || "não resolvido"}`,
+    `Momento: ${new Date().toISOString()}`,
+    `Resultado: ${detail.slice(0, 800)}`,
+    "Nenhuma rota alternativa, credencial ou tentativa de evasão foi executada.",
+  ].join("\n");
+  const path = `${job.org_id}/${job.id}/connection-diagnostic.txt`;
+  const upload = await db.storage.from("evidence-vault").upload(path, Buffer.from(content), { contentType: "text/plain", upsert: false });
+  if (upload.error) throw upload.error;
+  await db.from("evidence_artifacts").insert({
+    org_id: job.org_id, job_id: job.id, kind: "connection_diagnostic", label: "Diagnóstico de conectividade", storage_path: path,
+    sha256: createHash("sha256").update(content).digest("hex"), size_bytes: Buffer.byteLength(content), redacted_preview: content,
+  });
 }
 
 function findingFromHeaders(headers, target) {
@@ -227,29 +278,26 @@ async function progress(job, value, step) {
 }
 
 async function execute(job) {
+  let resolvedAddresses = [];
   try {
     await progress(job, 5, "Validando escopo e destino");
-    await assertPublicTarget(job.target_url, job.assets, job.scopes);
-    const resolvedTarget = await lookup(new URL(job.target_url).hostname, { all: false });
+    resolvedAddresses = await assertPublicTarget(job.target_url, job.assets, job.scopes);
     const cancelled = await db.from("scan_jobs").select("status").eq("id", job.id).single();
     if (cancelled.data?.status === "cancelled") return;
     await progress(job, 20, "Coletando resposta HTTP");
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 12_000);
-    const response = await fetch(job.target_url, { redirect: "error", signal: controller.signal, headers: { "User-Agent": "AegisForge-Worker/1.0 (+authorized-validation)" } });
-    clearTimeout(timer);
+    const { response, effectiveTarget, redirect } = await fetchAuthorizedTarget(job.target_url);
     const headersText = [...response.headers.entries()].map(([name, value]) => `${name}: ${value}`).sort().join("\n");
     const body = (await response.text()).slice(0, 100_000);
     await progress(job, 55, "Analisando postura de segurança");
     const rawFindings = job.profile === "llm_lab" ? [] : [
-      ...findingFromHeaders(response.headers, job.target_url),
-      ...(job.profile === "api_validation" ? apiCorsFindings(response.headers, job.target_url) : []),
-      ...(job.profile === "api_validation" ? apiOperationalFindings(response.headers, job.target_url) : []),
-      ...(job.profile === "api_validation" ? openApiContractFindings(job.configuration, job.target_url) : []),
+      ...findingFromHeaders(response.headers, effectiveTarget),
+      ...(job.profile === "api_validation" ? apiCorsFindings(response.headers, effectiveTarget) : []),
+      ...(job.profile === "api_validation" ? apiOperationalFindings(response.headers, effectiveTarget) : []),
+      ...(job.profile === "api_validation" ? openApiContractFindings(job.configuration, effectiveTarget) : []),
     ];
     const { data: scan, error: scanError } = await db.from("scans").insert({ org_id: job.org_id, asset_id: job.asset_id, profile: job.profile === "llm_lab" ? "llm_redteam" : "passive_recon", engines: job.profile === "authenticated_web" ? ["playwright"] : ["custom_fuzzer"], status: "completed", progress: 100, started_at: new Date().toISOString(), finished_at: new Date().toISOString(), requested_by: job.requested_by }).select("id").single();
     if (scanError) throw scanError;
-    const inventory = [...publicInventory(job.target_url, response, body, resolvedTarget.address), ...(job.profile === "api_validation" ? openApiInventory(job.configuration) : []), ...(job.profile === "api_validation" ? postmanInventory(job.configuration) : [])];
+    const inventory = [...publicInventory(effectiveTarget, response, body, resolvedAddresses.join(", ")), ...(redirect ? [["transport", "Redirecionamento validado", redirect, "http_redirect"]] : []), ...(job.profile === "api_validation" ? openApiInventory(job.configuration) : []), ...(job.profile === "api_validation" ? postmanInventory(job.configuration) : [])];
     await db.from("inventory_observations").upsert(inventory.map(([category, name, value_masked, source]) => ({ org_id: job.org_id, asset_id: job.asset_id, scan_id: scan.id, category, name, value_masked, source })), { onConflict: "asset_id,category,name,source" });
     const fingerprint = (finding) => createHash("sha256").update(`${job.asset_id}:${finding.title}:${finding.endpoint}`).digest("hex");
     const savedFindings = [];
@@ -282,6 +330,7 @@ async function execute(job) {
     await db.from("scan_jobs").update({ status: "completed", progress: 100, current_step: "Concluído", finished_at: new Date().toISOString(), configuration: { ...job.configuration, legacy_scan_id: scan.id } }).eq("id", job.id);
     await db.from("audit_events").insert({ org_id: job.org_id, actor_id: job.requested_by, action: "scan_job.completed", entity_type: "scan_job", entity_id: job.id, metadata: { findings: rawFindings.length } });
   } catch (error) {
+    await saveFailureDiagnostic(job, job.target_url, resolvedAddresses, error).catch(() => undefined);
     await db.from("scan_jobs").update({ status: "failed", current_step: "Falhou", error_text: safeWorkerError(error), finished_at: new Date().toISOString() }).eq("id", job.id);
   }
 }
