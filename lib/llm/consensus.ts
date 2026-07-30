@@ -16,7 +16,7 @@ type ProviderResult = {
 function evidenceDigest(findings: Finding[]) {
   return findings
     .slice(0, 30)
-    .map((finding) => `- [${finding.status}] ${finding.title}; severidade=${finding.severity}; evidência=${(finding.evidenceSnippet ?? finding.summary).slice(0, 280)}; correção=${finding.remediation.slice(0, 180)}`)
+    .map((finding) => `- [${finding.status}] ${finding.title}; severidade=${finding.severity}; evidência=${(finding.evidenceSnippet ?? finding.summary ?? "Sem trecho disponível").slice(0, 280)}; correção=${(finding.remediation ?? "Revisar a configuração e validar o reteste.").slice(0, 180)}`)
     .join("\n");
 }
 
