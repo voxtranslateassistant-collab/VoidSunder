@@ -53,6 +53,14 @@ function Cell({ r }: { r: LlmProbeResult | undefined }) {
   );
 }
 
+function ConsensusNetwork({ providers, active }: { providers: ProviderStatus[]; active: boolean }) {
+  const connected = providers.filter((provider) => provider.configured);
+  if (connected.length < 2) return null;
+  return <Card className="overflow-hidden"><CardContent className="relative py-5"><div className="absolute inset-x-12 top-1/2 h-px bg-prism-cyan/20" />
+    <div className="relative flex items-center justify-between gap-3">{connected.map((provider) => <div key={provider.id} className="flex min-w-0 flex-1 flex-col items-center gap-2"><span className={`relative flex size-10 items-center justify-center rounded-full border border-prism-cyan/50 bg-surface-2 text-xs text-prism-cyan ${active ? "animate-pulse" : ""}`}><BrainCircuit className="size-4" /></span><span className="truncate text-xs text-fog-blue">{provider.label}</span></div>)}</div>
+    <p className="mt-4 text-center text-xs text-graphite-veil">{active ? "Modelos analisando em conjunto e comparando evidências…" : "Modelos conectados prontos para análise colaborativa."}</p></CardContent></Card>;
+}
+
 export function LlmLab({
   providers,
   initialRun,
@@ -146,6 +154,8 @@ export function LlmLab({
           </Card>
         ))}
       </div>
+
+      <ConsensusNetwork providers={providers} active={loading} />
 
       {/* Ação */}
       <Card className="prism-glow">
