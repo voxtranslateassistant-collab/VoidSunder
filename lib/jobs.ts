@@ -98,7 +98,7 @@ export async function getJobDetail(id: string) {
 
 export async function getOperationalOverview() {
   const supabase = await createClient();
-  const [assets, active, findings, critical, recent, latestCompleted, oldestPending] = await Promise.all([
+  const [assets, active, findings, critical, recent, latestCompleted, oldestPending, workerHeartbeat] = await Promise.all([
     supabase.from("assets").select("id", { count: "exact", head: true }),
     supabase.from("scan_jobs").select("id", { count: "exact", head: true }).in("status", ["queued", "claimed", "running"]),
     supabase.from("findings").select("id", { count: "exact", head: true }).in("status", ["open", "confirmed"]),
@@ -106,8 +106,9 @@ export async function getOperationalOverview() {
     supabase.from("scan_jobs").select("id, target_url, profile, status, progress, current_step, created_at, assets(name)").order("created_at", { ascending: false }).limit(6),
     supabase.from("scan_jobs").select("finished_at").eq("status", "completed").order("finished_at", { ascending: false }).limit(1).maybeSingle(),
     supabase.from("scan_jobs").select("created_at").in("status", ["queued", "claimed", "running"]).order("created_at", { ascending: true }).limit(1).maybeSingle(),
+    supabase.from("worker_heartbeats").select("last_seen_at").order("last_seen_at", { ascending: false }).limit(1).maybeSingle(),
   ]);
-  for (const result of [assets, active, findings, critical, recent, latestCompleted, oldestPending]) if (result.error) throw result.error;
+  for (const result of [assets, active, findings, critical, recent, latestCompleted, oldestPending, workerHeartbeat]) if (result.error) throw result.error;
   return {
     assets: assets.count ?? 0,
     active: active.count ?? 0,
@@ -116,6 +117,7 @@ export async function getOperationalOverview() {
     recent: recent.data ?? [],
     latestCompletedAt: latestCompleted.data?.finished_at ?? null,
     oldestPendingAt: oldestPending.data?.created_at ?? null,
+    workerLastSeenAt: workerHeartbeat.data?.last_seen_at ?? null,
   };
 }
 

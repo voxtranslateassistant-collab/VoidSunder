@@ -7,8 +7,10 @@ const url = process.env.SUPABASE_URL;
 const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
 const workerId = process.env.WORKER_ID || `aegisforge-${process.pid}`;
 const pollMs = Number(process.env.WORKER_POLL_MS || 5000);
+const heartbeatMs = Number(process.env.WORKER_HEARTBEAT_MS || 30_000);
 if (!url || !key) throw new Error("SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are required.");
 const db = createClient(url, key, { auth: { autoRefreshToken: false, persistSession: false } });
+let lastHeartbeatAt = 0;
 
 const isPrivateIp = (ip) => {
   if (net.isIPv4(ip)) return /^(127\.|10\.|0\.|169\.254\.|192\.168\.|172\.(1[6-9]|2\d|3[0-1])\.)/.test(ip);
@@ -156,6 +158,19 @@ async function claim() {
   return data || null;
 }
 
+async function heartbeat() {
+  if (Date.now() - lastHeartbeatAt < heartbeatMs) return;
+  const { data: organizations, error } = await db.from("organizations").select("id");
+  if (error) throw error;
+  if (!organizations?.length) return;
+  const { error: writeError } = await db.from("worker_heartbeats").upsert(
+    organizations.map(({ id }) => ({ org_id: id, worker_id: workerId, status: "online", last_seen_at: new Date().toISOString(), metadata: { poll_ms: pollMs } })),
+    { onConflict: "org_id" },
+  );
+  if (writeError) throw writeError;
+  lastHeartbeatAt = Date.now();
+}
+
 async function progress(job, value, step) {
   await db.from("scan_jobs").update({ status: "running", progress: value, current_step: step }).eq("id", job.id).neq("status", "cancelled");
   await db.from("scan_steps").insert({ job_id: job.id, name: step, status: "completed", started_at: new Date().toISOString(), finished_at: new Date().toISOString() });
@@ -220,7 +235,7 @@ async function execute(job) {
   }
 }
 
-async function loop() { const job = await claim(); if (job) await execute(job); }
+async function loop() { await heartbeat().catch((error) => console.error("worker heartbeat failed", error)); const job = await claim(); if (job) await execute(job); }
 setInterval(() => loop().catch(console.error), pollMs);
 console.info(`AegisForge worker ativo: ${workerId}; intervalo: ${pollMs}ms`);
 loop().catch(console.error);
