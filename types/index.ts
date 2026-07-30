@@ -117,7 +117,7 @@ export interface DashboardMetrics {
 // LLM Lab — Red team multi-provedor
 // ============================================================
 
-export type LlmProviderId = "gemini" | "groq" | "openrouter";
+export type LlmProviderId = "gemini" | "groq" | "openrouter" | "openai" | "anthropic";
 
 export type LlmVector =
   | "prompt_injection"

@@ -37,6 +37,20 @@ export const PROVIDERS: Record<LlmProviderId, ProviderConfig> = {
     envKey: "OPENROUTER_API_KEY",
     keyUrl: "https://openrouter.ai/keys",
   },
+  openai: {
+    id: "openai",
+    label: "OpenAI",
+    model: process.env.OPENAI_MODEL || "gpt-4-turbo",
+    envKey: "OPENAI_API_KEY",
+    keyUrl: "https://platform.openai.com/api-keys",
+  },
+  anthropic: {
+    id: "anthropic",
+    label: "Anthropic · Claude",
+    model: process.env.ANTHROPIC_MODEL || "claude-3-opus-20240229",
+    envKey: "ANTHROPIC_API_KEY",
+    keyUrl: "https://console.anthropic.com/settings/keys",
+  },
 };
 
 export async function providerKey(id: LlmProviderId): Promise<string | undefined> {
@@ -116,11 +130,18 @@ export async function chat(
       return { ok: true, text, error: null, latencyMs: Date.now() - started };
     }
 
-    // Groq e OpenRouter são compatíveis com a API da OpenAI.
+    if (id === "anthropic") {
+      res = await withTimeout((signal) => fetch("https://api.anthropic.com/v1/messages", { method: "POST", signal, headers: { "Content-Type": "application/json", "x-api-key": key, "anthropic-version": "2023-06-01" }, body: JSON.stringify({ model: cfg.model, max_tokens: 512, system, messages: [{ role: "user", content: user }] }) }));
+      if (!res.ok) throw new Error(`HTTP ${res.status}: ${await res.text()}`);
+      const data = await res.json();
+      return { ok: true, text: data?.content?.map((item: { text?: string }) => item.text ?? "").join("") ?? "", error: null, latencyMs: Date.now() - started };
+    }
+
+    // Groq, OpenRouter e OpenAI são compatíveis com Chat Completions.
     const endpoint =
       id === "groq"
         ? "https://api.groq.com/openai/v1/chat/completions"
-        : "https://openrouter.ai/api/v1/chat/completions";
+        : id === "openrouter" ? "https://openrouter.ai/api/v1/chat/completions" : "https://api.openai.com/v1/chat/completions";
 
     res = await withTimeout((signal) =>
       fetch(endpoint, {
