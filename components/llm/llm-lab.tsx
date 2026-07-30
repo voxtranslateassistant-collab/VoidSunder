@@ -56,9 +56,33 @@ function Cell({ r }: { r: LlmProbeResult | undefined }) {
 function ConsensusNetwork({ providers, active }: { providers: ProviderStatus[]; active: boolean }) {
   const connected = providers.filter((provider) => provider.configured);
   if (connected.length < 2) return null;
-  return <Card className="overflow-hidden"><CardContent className="relative py-5"><div className="absolute inset-x-12 top-1/2 h-px bg-prism-cyan/20" />
-    <div className="relative flex items-center justify-between gap-3">{connected.map((provider) => <div key={provider.id} className="flex min-w-0 flex-1 flex-col items-center gap-2"><span className={`relative flex size-10 items-center justify-center rounded-full border border-prism-cyan/50 bg-surface-2 text-xs text-prism-cyan ${active ? "animate-pulse" : ""}`}><BrainCircuit className="size-4" /></span><span className="truncate text-xs text-fog-blue">{provider.label}</span></div>)}</div>
-    <p className="mt-4 text-center text-xs text-graphite-veil">{active ? "Modelos analisando em conjunto e comparando evidências…" : "Modelos conectados prontos para análise colaborativa."}</p></CardContent></Card>;
+  return (
+    <Card className="overflow-hidden border-prism-cyan/20">
+      <CardContent className="relative py-5">
+        <div className="mb-4 flex items-center justify-between text-xs">
+          <span className="text-micro-caps text-prism-cyan">Rede colaborativa</span>
+          <span className="flex items-center gap-1.5 text-graphite-veil"><span className="size-1.5 animate-pulse rounded-full bg-prism-lime" />{connected.length} chaves ativas</span>
+        </div>
+        <div className="relative px-12">
+          <div className="absolute inset-x-12 top-5 h-px bg-prism-cyan/25" />
+          {["0s", "0.85s", "1.7s"].map((delay) => <i key={delay} aria-hidden className={`absolute top-[17px] size-2 rounded-full bg-prism-cyan shadow-[0_0_10px_var(--color-prism-cyan)] ${active ? "signal-running" : "signal-idle"}`} style={{ animationDelay: delay }} />)}
+          <div className="relative flex items-start justify-between gap-3">
+            {connected.map((provider, index) => <div key={provider.id} className="flex min-w-0 flex-1 flex-col items-center gap-2"><span className={`network-node relative flex size-10 items-center justify-center rounded-full border border-prism-cyan/60 bg-surface-2 text-prism-cyan ${active ? "network-node-active" : ""}`} style={{ animationDelay: `${index * 0.25}s` }}><BrainCircuit className="size-4" /></span><span className="truncate text-xs text-fog-blue">{provider.label}</span></div>)}
+          </div>
+        </div>
+        <p className="mt-4 text-center text-xs text-graphite-veil">{active ? "Modelos trocando análises e comparando evidências…" : "Pulsos indicam a rede pronta para análise colaborativa."}</p>
+      </CardContent>
+      <style jsx>{`
+        .network-node { animation: network-node 2.4s ease-in-out infinite; }
+        .network-node-active { animation-duration: 0.95s; }
+        .signal-idle, .signal-running { left: 12%; animation: signal-flow 2.55s linear infinite; }
+        .signal-running { animation-duration: 1.1s; }
+        @keyframes network-node { 0%,100% { transform: scale(1); box-shadow: 0 0 0 rgba(65, 193, 255, 0); } 50% { transform: scale(1.07); box-shadow: 0 0 18px rgba(65, 193, 255, .45); } }
+        @keyframes signal-flow { 0% { left: 12%; opacity: 0; } 12% { opacity: 1; } 82% { opacity: 1; } 100% { left: 88%; opacity: 0; } }
+        @media (prefers-reduced-motion: reduce) { .network-node, .signal-idle, .signal-running { animation: none; } }
+      `}</style>
+    </Card>
+  );
 }
 
 export function LlmLab({
@@ -186,9 +210,7 @@ export function LlmLab({
 
       {!anyConfigured && (
         <p className="text-sm text-graphite-veil">
-          Adicione ao menos uma chave no arquivo{" "}
-          <code className="text-fog-blue">.env.local</code> e reinicie o servidor
-          para habilitar a execução.
+          Adicione ao menos uma chave em <a href="/integrations" className="text-prism-cyan hover:text-bone-white">Integrações</a> para habilitar a execução.
         </p>
       )}
 
