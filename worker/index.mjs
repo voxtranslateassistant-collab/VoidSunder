@@ -99,6 +99,25 @@ function openApiInventory(configuration) {
   } catch { return []; }
 }
 
+function postmanInventory(configuration) {
+  const source = configuration?.openapi_spec;
+  if (typeof source !== "string" || source.length > 500_000) return [];
+  try {
+    const document = JSON.parse(source);
+    if (!Array.isArray(document?.item)) return [];
+    const observations = [];
+    const walk = (items) => { for (const item of items ?? []) {
+      if (Array.isArray(item.item)) walk(item.item);
+      const request = item.request;
+      const rawUrl = typeof request?.url === "string" ? request.url : request?.url?.raw;
+      const method = request?.method;
+      if (typeof method === "string" && typeof rawUrl === "string") observations.push(["api_surface", `${method.toUpperCase()} ${rawUrl.replace(/^https?:\/\/[^/]+/i, "") || "/"}`.slice(0, 240), "Declarado na coleção Postman enviada pelo operador", "postman_import"]);
+      if (observations.length >= 200) return;
+    }};
+    walk(document.item); return observations;
+  } catch { return []; }
+}
+
 function apiCorsFindings(headers, target) {
   const origin = headers.get("access-control-allow-origin");
   const credentials = headers.get("access-control-allow-credentials");
@@ -164,7 +183,7 @@ async function execute(job) {
     ];
     const { data: scan, error: scanError } = await db.from("scans").insert({ org_id: job.org_id, asset_id: job.asset_id, profile: job.profile === "llm_lab" ? "llm_redteam" : "passive_recon", engines: job.profile === "authenticated_web" ? ["playwright"] : ["custom_fuzzer"], status: "completed", progress: 100, started_at: new Date().toISOString(), finished_at: new Date().toISOString(), requested_by: job.requested_by }).select("id").single();
     if (scanError) throw scanError;
-    const inventory = [...publicInventory(job.target_url, response, body, resolvedTarget.address), ...(job.profile === "api_validation" ? openApiInventory(job.configuration) : [])];
+    const inventory = [...publicInventory(job.target_url, response, body, resolvedTarget.address), ...(job.profile === "api_validation" ? openApiInventory(job.configuration) : []), ...(job.profile === "api_validation" ? postmanInventory(job.configuration) : [])];
     await db.from("inventory_observations").upsert(inventory.map(([category, name, value_masked, source]) => ({ org_id: job.org_id, asset_id: job.asset_id, scan_id: scan.id, category, name, value_masked, source })), { onConflict: "asset_id,category,name,source" });
     const fingerprint = (finding) => createHash("sha256").update(`${job.asset_id}:${finding.title}:${finding.endpoint}`).digest("hex");
     for (const finding of rawFindings) {
