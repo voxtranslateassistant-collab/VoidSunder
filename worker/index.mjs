@@ -150,6 +150,17 @@ function apiOperationalFindings(headers, target) {
   return [];
 }
 
+function safeWorkerError(error) {
+  if (!(error instanceof Error)) return "Erro inesperado no worker.";
+  const cause = error.cause;
+  if (cause && typeof cause === "object") {
+    const code = "code" in cause && typeof cause.code === "string" ? cause.code : null;
+    if (code) return `Falha de conexão ao alvo (${code}). Verifique DNS, TLS, firewall e disponibilidade pública do domínio.`;
+  }
+  if (error.message === "fetch failed") return "Falha de conexão ao alvo. Verifique DNS, TLS, firewall e disponibilidade pública do domínio.";
+  return error.message.slice(0, 500);
+}
+
 async function claim() {
   const { data: candidate } = await db.from("scan_jobs").select("id").eq("status", "queued").order("created_at").limit(1).maybeSingle();
   if (!candidate) return null;
@@ -231,7 +242,7 @@ async function execute(job) {
     await db.from("scan_jobs").update({ status: "completed", progress: 100, current_step: "Concluído", finished_at: new Date().toISOString(), configuration: { ...job.configuration, legacy_scan_id: scan.id } }).eq("id", job.id);
     await db.from("audit_events").insert({ org_id: job.org_id, actor_id: job.requested_by, action: "scan_job.completed", entity_type: "scan_job", entity_id: job.id, metadata: { findings: rawFindings.length } });
   } catch (error) {
-    await db.from("scan_jobs").update({ status: "failed", current_step: "Falhou", error_text: error instanceof Error ? error.message : "Erro inesperado no worker", finished_at: new Date().toISOString() }).eq("id", job.id);
+    await db.from("scan_jobs").update({ status: "failed", current_step: "Falhou", error_text: safeWorkerError(error), finished_at: new Date().toISOString() }).eq("id", job.id);
   }
 }
 
