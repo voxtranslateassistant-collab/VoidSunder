@@ -29,9 +29,14 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
   const notes = sorted.filter((finding) => finding.ai_triage_note).map((finding) => `<article><h4>${esc(finding.title)}</h4>${paragraphs(finding.ai_triage_note!)}</article>`).join("");
   const latestConsensus = (consensusRuns?.[0]?.consensus ?? null) as { report?: string; confidence?: number; providersUsed?: string[] } | null;
   if (new URL(request.url).searchParams.get("format") === "pdf") {
-    const pdf = await createSecurityReportPdf({ assetName: asset?.name ?? "Ativo", assetTarget: asset?.target ?? "", profile: scan.profile, startedAt: scan.started_at, findings: sorted, executive, consensus: latestConsensus });
-    const baseName = (asset?.name ?? "relatorio").replace(/[^a-z0-9]+/gi, "-").replace(/^-|-$/g, "").toLowerCase() || "relatorio";
-    return new Response(new Uint8Array(pdf), { headers: { "Content-Type": "application/pdf", "Content-Disposition": `attachment; filename="voidsunder-${baseName}.pdf"`, "Cache-Control": "no-store" } });
+    try {
+      const pdf = await createSecurityReportPdf({ assetName: asset?.name ?? "Ativo", assetTarget: asset?.target ?? "", profile: scan.profile, startedAt: scan.started_at, findings: sorted, executive, consensus: latestConsensus });
+      const baseName = (asset?.name ?? "relatorio").replace(/[^a-z0-9]+/gi, "-").replace(/^-|-$/g, "").toLowerCase() || "relatorio";
+      return new Response(new Uint8Array(pdf), { headers: { "Content-Type": "application/pdf", "Content-Disposition": `attachment; filename="voidsunder-${baseName}.pdf"`, "Cache-Control": "no-store" } });
+    } catch (error) {
+      console.error("PDF report generation failed", { scanId: id, message: error instanceof Error ? error.message : "unknown error" });
+      return new Response("Não foi possível gerar o PDF deste relatório. Tente novamente em alguns instantes.", { status: 500, headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store" } });
+    }
   }
   const consensus = latestConsensus?.report ? `<section class="ai"><h2>Consenso entre IAs</h2><div class="muted">Provedores: ${esc((latestConsensus.providersUsed ?? []).join(" · "))} · Confiança: ${Math.round((latestConsensus.confidence ?? 0) * 100)}%</div>${paragraphs(latestConsensus.report)}</section>` : "";
   const aiNotes = notes ? `<section class="ai"><h2>Análises aprofundadas por IA</h2>${notes}</section>` : "";

@@ -1,4 +1,4 @@
-import PDFDocument from "pdfkit";
+import type PDFDocument from "pdfkit";
 
 type PdfFinding = {
   title: string;
@@ -25,7 +25,15 @@ const palette: Record<string, string> = { critical: "#b42318", high: "#e25d16", 
 const severityLabel: Record<string, string> = { critical: "CRÍTICO", high: "ALTO", medium: "MÉDIO", low: "BAIXO", info: "INFORMATIVO" };
 const safe = (value: string | null | undefined) => (value ?? "—").replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, " ");
 
+async function loadPdfDocument() {
+  const module = await import("pdfkit");
+  const constructor = module.default ?? module;
+  if (typeof constructor !== "function") throw new Error("O gerador de PDF não foi carregado no ambiente de execução.");
+  return constructor as unknown as typeof PDFDocument;
+}
+
 export async function createSecurityReportPdf(input: SecurityReportPdfInput): Promise<Buffer> {
+  const PDFDocument = await loadPdfDocument();
   return new Promise((resolve, reject) => {
     const document = new PDFDocument({ size: "A4", margin: 48, bufferPages: true, info: { Title: `Relatório VoidSunder - ${input.assetName}`, Author: "VoidSunder" } });
     const chunks: Buffer[] = [];
