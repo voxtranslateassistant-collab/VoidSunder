@@ -62,11 +62,13 @@ export async function createSecurityReportPdf(input: SecurityReportPdfInput): Pr
     heading("Achados e recomendações");
     if (!input.findings.length) paragraph("Nenhum achado foi registrado nesta validação.");
     for (const finding of input.findings) {
-      ensureSpace(130);
-      document.roundedRect(48, document.y, 499, 18, 2).fillAndStroke("#f5f7fa", "#d8dee8");
-      document.fillColor(palette[finding.severity] ?? "#52606f").font("Helvetica-Bold").fontSize(8).text(severityLabel[finding.severity] ?? finding.severity.toUpperCase(), 55, document.y - 14);
-      document.fillColor("#17212d").font("Helvetica-Bold").fontSize(11).text(safe(finding.title), 120, document.y - 14, { width: 415 });
-      document.moveDown(0.6).font("Helvetica").fontSize(8.5).fillColor("#52606f").text(`${safe(finding.validation_status)} · Confiança: ${Math.round((finding.confidence ?? 0) * 100)}%`);
+      ensureSpace(165);
+      const cardTop = document.y;
+      document.roundedRect(48, cardTop, 499, 22, 2).fillAndStroke("#f5f7fa", "#d8dee8");
+      document.fillColor(palette[finding.severity] ?? "#52606f").font("Helvetica-Bold").fontSize(8).text(severityLabel[finding.severity] ?? finding.severity.toUpperCase(), 55, cardTop + 7, { lineBreak: false });
+      document.fillColor("#17212d").font("Helvetica-Bold").fontSize(11).text(safe(finding.title), 120, cardTop + 5, { width: 415, lineBreak: false });
+      document.y = cardTop + 32;
+      document.font("Helvetica").fontSize(8.5).fillColor("#52606f").text(`${safe(finding.validation_status)} · Confiança: ${Math.round((Number(finding.confidence) || 0) * 100)}%`);
       document.font("Helvetica-Bold").fontSize(8.5).fillColor("#17212d").text("Evidência resumida"); paragraph(safe(finding.summary));
       document.font("Helvetica-Bold").fontSize(8.5).fillColor("#17212d").text("Correção recomendada"); paragraph(safe(finding.recommended_fix));
       if (finding.ai_triage_note) { document.font("Helvetica-Bold").fontSize(8.5).fillColor("#17212d").text("Análise por IA"); paragraph(finding.ai_triage_note); }
