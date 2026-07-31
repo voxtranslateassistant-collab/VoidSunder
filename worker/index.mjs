@@ -61,6 +61,77 @@ async function fetchAuthorizedTarget(target) {
   }
 }
 
+async function readResponseExcerpt(response, maxBytes = 100_000) {
+  const declaredLength = Number(response.headers.get("content-length") || 0);
+  if (Number.isFinite(declaredLength) && declaredLength > maxBytes) return "";
+  const reader = response.body?.getReader();
+  if (!reader) return "";
+  const chunks = [];
+  let size = 0;
+  try {
+    while (size < maxBytes) {
+      const { done, value } = await reader.read();
+      if (done || !value) break;
+      const remaining = maxBytes - size;
+      const chunk = value.byteLength > remaining ? value.subarray(0, remaining) : value;
+      chunks.push(Buffer.from(chunk));
+      size += chunk.byteLength;
+      if (chunk.byteLength < value.byteLength) break;
+    }
+  } finally {
+    if (size >= maxBytes) await reader.cancel().catch(() => undefined);
+  }
+  return Buffer.concat(chunks).toString("utf8");
+}
+
+async function collectPublicMetadata(target) {
+  const origin = new URL(target).origin;
+  const resources = [
+    ["/robots.txt", "robots.txt"],
+    ["/sitemap.xml", "sitemap.xml"],
+    ["/.well-known/security.txt", "security.txt"],
+  ];
+  const observations = [];
+  const discoveredRoutes = new Set();
+  for (const [path, label] of resources) {
+    const endpoint = new URL(path, origin);
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 6_000);
+    try {
+      const response = await fetch(endpoint, {
+        method: "GET",
+        redirect: "manual",
+        signal: controller.signal,
+        headers: { "User-Agent": "AegisForge-Worker/1.1 (+authorized-inventory)" },
+      });
+      if (response.status >= 200 && response.status < 300) {
+        observations.push(["public_file", label, `Disponível (HTTP ${response.status})`, "public_metadata"]);
+        const excerpt = await readResponseExcerpt(response, 100_000);
+        if (path === "/robots.txt") {
+          for (const match of excerpt.matchAll(/^\s*(?:allow|disallow)\s*:\s*(\/[^\s#]*)/gim)) {
+            const route = match[1].split("?")[0];
+            if (/^\/(?!\/)/.test(route)) discoveredRoutes.add(route.slice(0, 240));
+            if (discoveredRoutes.size >= 50) break;
+          }
+        }
+        if (path === "/sitemap.xml") {
+          for (const match of excerpt.matchAll(/<loc>\s*([^<\s]+)\s*<\/loc>/gi)) {
+            try {
+              const route = new URL(match[1]);
+              if (route.origin === origin) discoveredRoutes.add(route.pathname.slice(0, 240));
+            } catch { /* malformed public sitemap entry */ }
+            if (discoveredRoutes.size >= 50) break;
+          }
+        }
+      }
+    } catch { /* metadata is optional and must not fail the authorized scan */ } finally {
+      clearTimeout(timer);
+    }
+  }
+  for (const route of discoveredRoutes) observations.push(["route", route, "Rota pública declarada em metadado", "public_metadata"]);
+  return observations;
+}
+
 async function saveFailureDiagnostic(job, target, addresses, error) {
   const detail = error instanceof Error ? error.message : "Erro inesperado";
   const content = [
@@ -334,7 +405,7 @@ async function execute(job) {
     await progress(job, 20, "Coletando resposta HTTP");
     const { response, effectiveTarget, redirect } = await fetchAuthorizedTarget(job.target_url);
     const headersText = [...response.headers.entries()].map(([name, value]) => `${name}: ${value}`).sort().join("\n");
-    const body = (await response.text()).slice(0, 100_000);
+    const body = await readResponseExcerpt(response);
     await progress(job, 55, "Analisando postura de segurança");
     const apiRouteResults = job.profile === "api_validation" ? await validateDeclaredGetRoutes(job.configuration, effectiveTarget) : [];
     const rawFindings = job.profile === "llm_lab" ? [] : [
@@ -353,7 +424,8 @@ async function execute(job) {
     const { data: scan, error: scanError } = await db.from("scans").insert({ org_id: job.org_id, asset_id: job.asset_id, profile: job.profile === "llm_lab" ? "llm_redteam" : "passive_recon", engines: job.profile === "authenticated_web" ? ["playwright"] : ["custom_fuzzer"], status: "completed", progress: 100, started_at: new Date().toISOString(), finished_at: new Date().toISOString(), requested_by: job.requested_by }).select("id").single();
     if (scanError) throw scanError;
     const routeObservations = apiRouteResults.map((route) => ["api_validation", `GET ${new URL(route.endpoint).pathname}`, route.status === null ? `Falha controlada: ${route.contentType}` : `HTTP ${route.status}; ${route.contentType.split(";")[0]}`, "api_route_validation"]);
-    const inventory = [...publicInventory(effectiveTarget, response, body, resolvedAddresses.join(", ")), ...(redirect ? [["transport", "Redirecionamento validado", redirect, "http_redirect"]] : []), ...(job.profile === "api_validation" ? openApiInventory(job.configuration) : []), ...(job.profile === "api_validation" ? postmanInventory(job.configuration) : []), ...routeObservations];
+    const publicMetadata = await collectPublicMetadata(effectiveTarget);
+    const inventory = [...publicInventory(effectiveTarget, response, body, resolvedAddresses.join(", ")), ...publicMetadata, ...(redirect ? [["transport", "Redirecionamento validado", redirect, "http_redirect"]] : []), ...(job.profile === "api_validation" ? openApiInventory(job.configuration) : []), ...(job.profile === "api_validation" ? postmanInventory(job.configuration) : []), ...routeObservations];
     await db.from("inventory_observations").upsert(inventory.map(([category, name, value_masked, source]) => ({ org_id: job.org_id, asset_id: job.asset_id, scan_id: scan.id, category, name, value_masked, source })), { onConflict: "asset_id,category,name,source" });
     const fingerprint = (finding) => createHash("sha256").update(`${job.asset_id}:${finding.title}:${finding.endpoint}`).digest("hex");
     const savedFindings = [];

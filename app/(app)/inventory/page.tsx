@@ -13,7 +13,7 @@ export const metadata = { title: "Inventário" };
 export const dynamic = "force-dynamic";
 
 const CATEGORY_LABEL: Record<string, string> = {
-  dns: "DNS", technology: "Tecnologia", route: "Rota", script: "JavaScript", api_surface: "API", transport: "Transporte",
+  dns: "DNS", technology: "Tecnologia", route: "Rota", script: "JavaScript", api_surface: "API", transport: "Transporte", public_file: "Arquivo público",
 };
 
 type Observation = {
