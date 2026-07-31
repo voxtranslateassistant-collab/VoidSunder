@@ -11,6 +11,8 @@ const heartbeatMs = Number(process.env.WORKER_HEARTBEAT_MS || 30_000);
 if (!url || !key) throw new Error("SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are required.");
 const db = createClient(url, key, { auth: { autoRefreshToken: false, persistSession: false } });
 let lastHeartbeatAt = 0;
+let lastLeaseRecoveryAt = 0;
+let loopInProgress = false;
 
 const isPrivateIp = (ip) => {
   if (net.isIPv4(ip)) return /^(127\.|10\.|0\.|169\.254\.|192\.168\.|172\.(1[6-9]|2\d|3[0-1])\.)/.test(ip);
@@ -390,6 +392,27 @@ async function heartbeat() {
   lastHeartbeatAt = Date.now();
 }
 
+async function recoverExpiredLeases() {
+  if (Date.now() - lastLeaseRecoveryAt < 30_000) return;
+  const now = new Date().toISOString();
+  const { data: recovered, error } = await db.from("scan_jobs")
+    .update({ status: "queued", progress: 0, worker_id: null, lease_expires_at: null, current_step: "Recuperado após interrupção do worker", error_text: null })
+    .in("status", ["claimed", "running"])
+    .lt("lease_expires_at", now)
+    .select("id");
+  if (error) throw error;
+  if (recovered?.length) {
+    await db.from("scan_steps").insert(recovered.map(({ id }) => ({
+      job_id: id,
+      name: "Recuperado após interrupção do worker",
+      status: "queued",
+      message: "A reserva expirou e o job voltou à fila para uma nova execução.",
+    })));
+    console.info(`Recuperados ${recovered.length} job(s) com reserva expirada.`);
+  }
+  lastLeaseRecoveryAt = Date.now();
+}
+
 async function progress(job, value, step) {
   await db.from("scan_jobs").update({ status: "running", progress: value, current_step: step }).eq("id", job.id).neq("status", "cancelled");
   await db.from("scan_steps").insert({ job_id: job.id, name: step, status: "completed", started_at: new Date().toISOString(), finished_at: new Date().toISOString() });
@@ -463,7 +486,18 @@ async function execute(job) {
   }
 }
 
-async function loop() { await heartbeat().catch((error) => console.error("worker heartbeat failed", error)); const job = await claim(); if (job) await execute(job); }
+async function loop() {
+  if (loopInProgress) return;
+  loopInProgress = true;
+  try {
+    await heartbeat().catch((error) => console.error("worker heartbeat failed", error));
+    await recoverExpiredLeases().catch((error) => console.error("lease recovery failed", error));
+    const job = await claim();
+    if (job) await execute(job);
+  } finally {
+    loopInProgress = false;
+  }
+}
 setInterval(() => loop().catch(console.error), pollMs);
 console.info(`AegisForge worker ativo: ${workerId}; intervalo: ${pollMs}ms`);
 loop().catch(console.error);
