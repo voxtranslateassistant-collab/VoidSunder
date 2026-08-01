@@ -1,5 +1,5 @@
 import { createClient } from "@supabase/supabase-js";
-import { createHash } from "node:crypto";
+import { createDecipheriv, createHash } from "node:crypto";
 import { lookup } from "node:dns/promises";
 import net from "node:net";
 
@@ -132,6 +132,50 @@ async function collectPublicMetadata(target) {
   }
   for (const route of discoveredRoutes) observations.push(["route", route, "Rota pública declarada em metadado", "public_metadata"]);
   return observations;
+}
+
+function credentialKey() {
+  const secret = process.env.ASSET_CREDENTIAL_ENCRYPTION_SECRET;
+  if (!secret) throw new Error("O worker não possui ASSET_CREDENTIAL_ENCRYPTION_SECRET configurado.");
+  return createHash("sha256").update(secret).digest();
+}
+
+function decryptFormCredential(encryptedValue) {
+  const [iv, authTag, ciphertext] = String(encryptedValue || "").split(".");
+  if (!iv || !authTag || !ciphertext) throw new Error("O formato da credencial de teste é inválido.");
+  const decipher = createDecipheriv("aes-256-gcm", credentialKey(), Buffer.from(iv, "base64"));
+  decipher.setAuthTag(Buffer.from(authTag, "base64"));
+  const plaintext = Buffer.concat([decipher.update(Buffer.from(ciphertext, "base64")), decipher.final()]).toString("utf8");
+  const credential = JSON.parse(plaintext);
+  if (!credential?.loginUrl || !credential?.username || !credential?.password) throw new Error("A credencial de teste está incompleta.");
+  return credential;
+}
+
+async function runAuthenticatedValidation(job, target) {
+  const { data, error } = await db.from("asset_credentials").select("encrypted_value").eq("asset_id", job.asset_id).eq("kind", "form_login").eq("label", "form-login").maybeSingle();
+  if (error) throw error;
+  if (!data) throw new Error("Nenhuma conta de teste foi cadastrada para este ativo.");
+  const credential = decryptFormCredential(data.encrypted_value);
+  const targetOrigin = new URL(target).origin;
+  if (new URL(credential.loginUrl).origin !== targetOrigin) throw new Error("A URL de login sai do domínio aprovado.");
+  const { chromium } = await import("playwright");
+  const browser = await chromium.launch({ headless: true, args: ["--disable-dev-shm-usage"] });
+  try {
+    const page = await browser.newPage();
+    await page.goto(credential.loginUrl, { waitUntil: "domcontentloaded", timeout: 20_000 });
+    await page.locator('input[type="email"], input[name="email"], input[name="username"], input[autocomplete="username"]').first().fill(credential.username, { timeout: 8_000 });
+    await page.locator('input[type="password"]').first().fill(credential.password, { timeout: 8_000 });
+    const submit = page.locator('button[type="submit"], input[type="submit"]').first();
+    await Promise.all([page.waitForLoadState("domcontentloaded", { timeout: 12_000 }).catch(() => undefined), submit.click({ timeout: 8_000 })]);
+    if (credential.postLoginPath) await page.goto(new URL(credential.postLoginPath, targetOrigin).toString(), { waitUntil: "domcontentloaded", timeout: 15_000 });
+    const finalUrl = new URL(page.url());
+    if (finalUrl.origin !== targetOrigin) throw new Error("O fluxo de login redirecionou para fora do escopo aprovado.");
+    const title = (await page.title()).replace(/\s+/g, " ").slice(0, 160);
+    const privateLinks = await page.locator("a[href]").evaluateAll((links) => links.map((link) => link.getAttribute("href") || "").filter((href) => href.startsWith("/")).slice(0, 25));
+    return { finalPath: finalUrl.pathname, title: title || "Sem título", privateLinks: [...new Set(privateLinks)], loginUrl: credential.loginUrl };
+  } finally {
+    await browser.close();
+  }
 }
 
 async function saveFailureDiagnostic(job, target, addresses, error) {
@@ -330,6 +374,41 @@ async function validateDeclaredGetRoutes(configuration, target) {
   return results;
 }
 
+async function validateDeclaredApiRoutes(configuration, target) {
+  const routes = declaredSafeGetRoutes(configuration, target);
+  const probe = async (endpoint, method) => {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 6_000);
+    try {
+      const response = await fetch(endpoint, { method, redirect: "manual", signal: controller.signal, headers: { "User-Agent": "AegisForge-Worker/1.1 (+authorized-api-validation)" } });
+      return { status: response.status, contentType: response.headers.get("content-type") || "não divulgado", allow: response.headers.get("allow") || "", corsOrigin: response.headers.get("access-control-allow-origin") || "", corsCredentials: response.headers.get("access-control-allow-credentials") || "" };
+    } catch (error) {
+      return { status: null, contentType: error instanceof Error ? error.message.slice(0, 160) : "falha de conexão", allow: "", corsOrigin: "", corsCredentials: "" };
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+  const results = [];
+  for (const endpoint of routes) {
+    const [get, head, options] = await Promise.all([probe(endpoint, "GET"), probe(endpoint, "HEAD"), probe(endpoint, "OPTIONS")]);
+    results.push({ endpoint, status: get.status, contentType: get.contentType, headStatus: head.status, optionsStatus: options.status, allowedMethods: options.allow, corsOrigin: options.corsOrigin, corsCredentials: options.corsCredentials });
+  }
+  return results;
+}
+
+function apiRouteProbeFindings(results) {
+  return results.flatMap((route) => {
+    if (route.corsOrigin === "*" && route.corsCredentials.toLowerCase() === "true") return [{
+      title: "CORS permissivo com credenciais em rota de API", severity: "high", cwe: "CWE-942", endpoint: route.endpoint,
+      summary: "A resposta OPTIONS da rota declara origem curinga e suporte a credenciais.", confidence: 0.95, finding_type: "cors_misconfiguration", validation_status: "confirmed",
+      evidence_masked: `OPTIONS ${new URL(route.endpoint).pathname}; Access-Control-Allow-Origin: *; Access-Control-Allow-Credentials: true`, source: "api_route_validation",
+      impact: "Pode expor respostas autenticadas a origens não confiáveis quando a configuração for aceita pelo navegador.", attack_prerequisites: "Usuário autenticado acessando uma origem não confiável compatível.",
+      recommended_fix: "Restrinja as origens permitidas e não combine curinga com credenciais.", retest_steps: "Envie OPTIONS com origem não autorizada e confirme que ela não recebe permissão.", scope_compliance: "approved",
+    }];
+    return [];
+  });
+}
+
 function apiCorsFindings(headers, target) {
   const origin = headers.get("access-control-allow-origin");
   const credentials = headers.get("access-control-allow-credentials");
@@ -429,13 +508,19 @@ async function execute(job) {
     const { response, effectiveTarget, redirect } = await fetchAuthorizedTarget(job.target_url);
     const headersText = [...response.headers.entries()].map(([name, value]) => `${name}: ${value}`).sort().join("\n");
     const body = await readResponseExcerpt(response);
+    let authenticatedEvidence = null;
+    if (job.profile === "authenticated_web") {
+      await progress(job, 45, "Validando sessão de teste com Playwright");
+      authenticatedEvidence = await runAuthenticatedValidation(job, effectiveTarget);
+    }
     await progress(job, 55, "Analisando postura de segurança");
-    const apiRouteResults = job.profile === "api_validation" ? await validateDeclaredGetRoutes(job.configuration, effectiveTarget) : [];
+    const apiRouteResults = job.profile === "api_validation" ? await validateDeclaredApiRoutes(job.configuration, effectiveTarget) : [];
     const rawFindings = job.profile === "llm_lab" ? [] : [
       ...findingFromHeaders(response.headers, effectiveTarget),
       ...(job.profile === "api_validation" ? apiCorsFindings(response.headers, effectiveTarget) : []),
       ...(job.profile === "api_validation" ? apiOperationalFindings(response.headers, effectiveTarget) : []),
       ...(job.profile === "api_validation" ? openApiContractFindings(job.configuration, effectiveTarget) : []),
+      ...(job.profile === "api_validation" ? apiRouteProbeFindings(apiRouteResults) : []),
       ...apiRouteResults.filter((route) => typeof route.status === "number" && route.status >= 500).map((route) => ({
         title: "Endpoint de API retornou erro de servidor", severity: "medium", cwe: "CWE-209", endpoint: route.endpoint,
         summary: `GET autorizado recebeu HTTP ${route.status}.`, confidence: 0.9, finding_type: "api_server_error", validation_status: "confirmed",
@@ -444,11 +529,16 @@ async function execute(job) {
         recommended_fix: "Revise logs internos, tratamento de exceções e contrato de resposta do endpoint.", retest_steps: "Repita a chamada GET autorizada após a correção e confirme uma resposta esperada sem erro 5xx.", scope_compliance: "approved",
       })),
     ];
-    const { data: scan, error: scanError } = await db.from("scans").insert({ org_id: job.org_id, asset_id: job.asset_id, profile: job.profile === "llm_lab" ? "llm_redteam" : "passive_recon", engines: job.profile === "authenticated_web" ? ["playwright"] : ["custom_fuzzer"], status: "completed", progress: 100, started_at: new Date().toISOString(), finished_at: new Date().toISOString(), requested_by: job.requested_by }).select("id").single();
+    const { data: scan, error: scanError } = await db.from("scans").insert({ org_id: job.org_id, asset_id: job.asset_id, profile: job.profile === "llm_lab" ? "llm_redteam" : "passive_recon", engines: job.profile === "authenticated_web" ? ["playwright", "custom_fuzzer"] : ["custom_fuzzer"], status: "completed", progress: 100, started_at: new Date().toISOString(), finished_at: new Date().toISOString(), requested_by: job.requested_by }).select("id").single();
     if (scanError) throw scanError;
     const routeObservations = apiRouteResults.map((route) => ["api_validation", `GET ${new URL(route.endpoint).pathname}`, route.status === null ? `Falha controlada: ${route.contentType}` : `HTTP ${route.status}; ${route.contentType.split(";")[0]}`, "api_route_validation"]);
+    const apiMethodObservations = apiRouteResults.flatMap((route) => [
+      ["api_validation", `HEAD ${new URL(route.endpoint).pathname}`, route.headStatus === null ? "Falha controlada" : `HTTP ${route.headStatus}`, "api_route_validation"],
+      ["api_validation", `OPTIONS ${new URL(route.endpoint).pathname}`, `HTTP ${route.optionsStatus ?? "falhou"}${route.allowedMethods ? `; Allow: ${route.allowedMethods}` : ""}${route.corsOrigin ? `; CORS: ${route.corsOrigin}` : ""}`, "api_route_validation"],
+    ]);
     const publicMetadata = await collectPublicMetadata(effectiveTarget);
-    const inventory = [...publicInventory(effectiveTarget, response, body, resolvedAddresses.join(", ")), ...publicMetadata, ...(redirect ? [["transport", "Redirecionamento validado", redirect, "http_redirect"]] : []), ...(job.profile === "api_validation" ? openApiInventory(job.configuration) : []), ...(job.profile === "api_validation" ? postmanInventory(job.configuration) : []), ...routeObservations];
+    const authenticatedObservations = authenticatedEvidence ? [["authenticated_route", authenticatedEvidence.finalPath, "Rota confirmada após login de teste", "playwright"], ...authenticatedEvidence.privateLinks.map((path) => ["authenticated_route", path, "Rota privada referenciada", "playwright"])] : [];
+    const inventory = [...publicInventory(effectiveTarget, response, body, resolvedAddresses.join(", ")), ...publicMetadata, ...authenticatedObservations, ...(redirect ? [["transport", "Redirecionamento validado", redirect, "http_redirect"]] : []), ...(job.profile === "api_validation" ? openApiInventory(job.configuration) : []), ...(job.profile === "api_validation" ? postmanInventory(job.configuration) : []), ...routeObservations, ...apiMethodObservations];
     await db.from("inventory_observations").upsert(inventory.map(([category, name, value_masked, source]) => ({ org_id: job.org_id, asset_id: job.asset_id, scan_id: scan.id, category, name, value_masked, source })), { onConflict: "asset_id,category,name,source" });
     const fingerprint = (finding) => createHash("sha256").update(`${job.asset_id}:${finding.title}:${finding.endpoint}`).digest("hex");
     const savedFindings = [];
@@ -477,6 +567,13 @@ async function execute(job) {
     const upload = await db.storage.from("evidence-vault").upload(path, Buffer.from(content), { contentType: "text/plain", upsert: false });
     if (upload.error) throw upload.error;
     await db.from("evidence_artifacts").insert({ org_id: job.org_id, job_id: job.id, kind: "http_response", label: "Resposta HTTP redigida", storage_path: path, sha256: createHash("sha256").update(content).digest("hex"), size_bytes: Buffer.byteLength(content), redacted_preview: content.slice(0, 500) });
+    if (authenticatedEvidence) {
+      const authContent = ["Validação autenticada controlada", `Login: ${authenticatedEvidence.loginUrl}`, `Rota confirmada: ${authenticatedEvidence.finalPath}`, `Título: ${authenticatedEvidence.title}`, `Rotas privadas referenciadas: ${authenticatedEvidence.privateLinks.length}`, "Nenhuma senha, cookie, token ou conteúdo pessoal foi armazenado."].join("\n");
+      const authPath = `${job.org_id}/${job.id}/authenticated-session.txt`;
+      const authUpload = await db.storage.from("evidence-vault").upload(authPath, Buffer.from(authContent), { contentType: "text/plain", upsert: false });
+      if (authUpload.error) throw authUpload.error;
+      await db.from("evidence_artifacts").insert({ org_id: job.org_id, job_id: job.id, kind: "authenticated_session", label: "Sessão de teste validada", storage_path: authPath, sha256: createHash("sha256").update(authContent).digest("hex"), size_bytes: Buffer.byteLength(authContent), redacted_preview: authContent });
+    }
     if (savedFindings.length) await db.from("evidence").insert(savedFindings.map((finding_id) => ({ finding_id, kind: "http_transcript", label: "Resposta HTTP redigida", storage_path: path, size_bytes: Buffer.byteLength(content) })));
     await db.from("scan_jobs").update({ status: "completed", progress: 100, current_step: "Concluído", finished_at: new Date().toISOString(), configuration: { ...job.configuration, legacy_scan_id: scan.id } }).eq("id", job.id);
     await db.from("audit_events").insert({ org_id: job.org_id, actor_id: job.requested_by, action: "scan_job.completed", entity_type: "scan_job", entity_id: job.id, metadata: { findings: rawFindings.length } });

@@ -2,6 +2,8 @@ import { TopBar } from "@/components/layout/topbar";
 import { LlmLab } from "@/components/llm/llm-lab";
 import { configuredProviders, PROVIDERS } from "@/lib/llm/providers";
 import { getRecentLlmRuns } from "@/lib/llm/runs";
+import { getRecentConsensusHistory } from "@/lib/llm/consensus-history";
+import { ConsensusHistory } from "@/components/llm/consensus-history";
 
 export const metadata = { title: "Lab de IA" };
 export const dynamic = "force-dynamic";
@@ -17,6 +19,7 @@ export default async function LlmLabPage() {
     configured: configured.includes(p.id),
   }));
   const history = await getRecentLlmRuns();
+  const consensusHistory = await getRecentConsensusHistory();
 
   return (
     <>
@@ -36,6 +39,7 @@ export default async function LlmLabPage() {
             provedor deu erro (ex.: cota esgotada), não que o teste falhou.
           </div>
           <LlmLab providers={providers} initialRun={history[0] ?? null} history={history} />
+          <ConsensusHistory entries={consensusHistory} />
         </div>
       </main>
     </>

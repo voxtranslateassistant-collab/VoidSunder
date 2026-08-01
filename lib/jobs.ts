@@ -1,4 +1,5 @@
 import { createClient } from "@/lib/supabase/server";
+import { saveFormLoginCredential, type FormLoginCredentialInput } from "@/lib/test-credentials";
 
 export type JobProfile = "web_recon" | "authenticated_web" | "api_validation" | "llm_lab";
 export type JobStatus = "queued" | "claimed" | "running" | "completed" | "failed" | "cancelled";
@@ -28,6 +29,13 @@ export type RetestComparison = {
   resolved: JobFinding[];
   retained: JobFinding[];
   introduced: JobFinding[];
+};
+
+export type OperationalAlert = {
+  id: "worker_offline" | "queue_delayed";
+  tone: "red" | "amber";
+  title: string;
+  description: string;
 };
 
 function targetHost(target: string) {
@@ -109,6 +117,26 @@ export async function getOperationalOverview() {
     supabase.from("worker_heartbeats").select("last_seen_at").order("last_seen_at", { ascending: false }).limit(1).maybeSingle(),
   ]);
   for (const result of [assets, active, findings, critical, recent, latestCompleted, oldestPending, workerHeartbeat]) if (result.error) throw result.error;
+  const now = Date.now();
+  const workerLastSeenAt = workerHeartbeat.data?.last_seen_at ?? null;
+  const oldestPendingAt = oldestPending.data?.created_at ?? null;
+  const alerts: OperationalAlert[] = [];
+  if (!workerLastSeenAt || now - new Date(workerLastSeenAt).getTime() >= 90_000) {
+    alerts.push({
+      id: "worker_offline",
+      tone: "red",
+      title: "Worker sem sinal recente",
+      description: "O worker não enviou heartbeat nos últimos 90 segundos. Confira o serviço no Railway e os logs de inicialização.",
+    });
+  }
+  if (oldestPendingAt && now - new Date(oldestPendingAt).getTime() >= 10 * 60_000) {
+    alerts.push({
+      id: "queue_delayed",
+      tone: "amber",
+      title: "Fila aguardando há mais de 10 minutos",
+      description: "Existe um job ativo há mais de 10 minutos. Abra a fila para identificar a etapa e, se necessário, verifique os logs do worker.",
+    });
+  }
   return {
     assets: assets.count ?? 0,
     active: active.count ?? 0,
@@ -116,13 +144,14 @@ export async function getOperationalOverview() {
     critical: critical.count ?? 0,
     recent: recent.data ?? [],
     latestCompletedAt: latestCompleted.data?.finished_at ?? null,
-    oldestPendingAt: oldestPending.data?.created_at ?? null,
-    workerLastSeenAt: workerHeartbeat.data?.last_seen_at ?? null,
+    oldestPendingAt,
+    workerLastSeenAt,
+    alerts,
   };
 }
 
 /** Creates a personal asset/scope when needed, then enqueues an isolated worker job. */
-export async function enqueueJob(input: { target: string; profile: JobProfile; kind: "web_app" | "api" | "llm_endpoint"; environment: "production" | "staging" | "development"; authorized: boolean; configuration?: Record<string, unknown> }) {
+export async function enqueueJob(input: { target: string; profile: JobProfile; kind: "web_app" | "api" | "llm_endpoint"; environment: "production" | "staging" | "development"; authorized: boolean; configuration?: Record<string, unknown>; testCredential?: FormLoginCredentialInput }) {
   if (!input.authorized) throw new Error("Confirme a autorização para operar este ativo.");
   const { url, host } = targetHost(input.target);
   const supabase = await createClient();
@@ -150,6 +179,14 @@ export async function enqueueJob(input: { target: string; profile: JobProfile; k
     const created = await supabase.from("scopes").insert({ asset_id: asset.id, include_globs: [url], status: "approved", approved_at: new Date().toISOString(), approved_by: userData.user.id, authorized_by: userData.user.email ?? "operador", notes: "Escopo pessoal aprovado ao cadastrar o ativo." }).select("id").single();
     if (created.error) throw created.error;
     scopeId = created.data.id;
+  }
+  if (input.profile === "authenticated_web") {
+    if (input.testCredential) await saveFormLoginCredential(supabase, asset.id, url, input.testCredential);
+    else {
+      const { data: existingCredential, error: credentialError } = await supabase.from("asset_credentials").select("id").eq("asset_id", asset.id).eq("kind", "form_login").limit(1).maybeSingle();
+      if (credentialError) throw credentialError;
+      if (!existingCredential) throw new Error("Cadastre uma conta de teste autorizada para executar o perfil de aplicação autenticada.");
+    }
   }
   const job = await supabase.from("scan_jobs").insert({ org_id: membership.org_id, asset_id: asset.id, scope_id: scopeId, profile: input.profile, target_url: url, requested_by: userData.user.id, configuration: input.configuration ?? {} }).select("id").single();
   if (job.error) throw job.error;
