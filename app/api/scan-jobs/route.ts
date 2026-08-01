@@ -13,7 +13,7 @@ export async function POST(request: Request) {
     const body = await request.json();
     const profile = body.profile as JobProfile;
     if (!body.target || !["web_recon", "authenticated_web", "api_validation", "llm_lab"].includes(profile)) return NextResponse.json({ error: "Dados de execução inválidos." }, { status: 400 });
-    const job = await enqueueJob({ target: body.target, profile, kind: body.kind ?? "web_app", environment: body.environment ?? "production", authorized: body.authorized === true, configuration: body.configuration });
+    const job = await enqueueJob({ target: body.target, profile, kind: body.kind ?? "web_app", environment: body.environment ?? "production", authorized: body.authorized === true, configuration: body.configuration, testCredential: body.testCredential });
     return NextResponse.json({ job }, { status: 201 });
   } catch (error) {
     return NextResponse.json({ error: error instanceof Error ? error.message : "Não foi possível enfileirar o scan." }, { status: 400 });
