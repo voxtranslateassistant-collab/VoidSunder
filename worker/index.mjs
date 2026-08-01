@@ -162,14 +162,17 @@ async function runAuthenticatedValidation(job, target) {
   const browser = await chromium.launch({ headless: true, args: ["--disable-dev-shm-usage"] });
   try {
     const page = await browser.newPage();
+    const expectedLoginPath = new URL(credential.loginUrl).pathname;
     await page.goto(credential.loginUrl, { waitUntil: "domcontentloaded", timeout: 20_000 });
     await page.locator('input[type="email"], input[name="email"], input[name="username"], input[autocomplete="username"]').first().fill(credential.username, { timeout: 8_000 });
     await page.locator('input[type="password"]').first().fill(credential.password, { timeout: 8_000 });
     const submit = page.locator('button[type="submit"], input[type="submit"]').first();
-    await Promise.all([page.waitForLoadState("domcontentloaded", { timeout: 12_000 }).catch(() => undefined), submit.click({ timeout: 8_000 })]);
+    await submit.click({ timeout: 8_000 });
+    await page.waitForTimeout(1_000);
     if (credential.postLoginPath) await page.goto(new URL(credential.postLoginPath, targetOrigin).toString(), { waitUntil: "domcontentloaded", timeout: 15_000 });
     const finalUrl = new URL(page.url());
     if (finalUrl.origin !== targetOrigin) throw new Error("O fluxo de login redirecionou para fora do escopo aprovado.");
+    if (finalUrl.pathname === expectedLoginPath) throw new Error("A conta de teste não foi autenticada: a rota privada retornou à página de login.");
     const title = (await page.title()).replace(/\s+/g, " ").slice(0, 160);
     const privateLinks = await page.locator("a[href]").evaluateAll((links) => links.map((link) => link.getAttribute("href") || "").filter((href) => href.startsWith("/")).slice(0, 25));
     return { finalPath: finalUrl.pathname, title: title || "Sem título", privateLinks: [...new Set(privateLinks)], loginUrl: credential.loginUrl };
