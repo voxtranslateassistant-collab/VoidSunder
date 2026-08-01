@@ -31,6 +31,13 @@ export type RetestComparison = {
   introduced: JobFinding[];
 };
 
+export type OperationalAlert = {
+  id: "worker_offline" | "queue_delayed";
+  tone: "red" | "amber";
+  title: string;
+  description: string;
+};
+
 function targetHost(target: string) {
   const url = new URL(/^https?:\/\//i.test(target) ? target : `https://${target}`);
   if (url.protocol !== "https:" && url.protocol !== "http:") throw new Error("Apenas URLs HTTP(S) são aceitas.");
@@ -110,6 +117,26 @@ export async function getOperationalOverview() {
     supabase.from("worker_heartbeats").select("last_seen_at").order("last_seen_at", { ascending: false }).limit(1).maybeSingle(),
   ]);
   for (const result of [assets, active, findings, critical, recent, latestCompleted, oldestPending, workerHeartbeat]) if (result.error) throw result.error;
+  const now = Date.now();
+  const workerLastSeenAt = workerHeartbeat.data?.last_seen_at ?? null;
+  const oldestPendingAt = oldestPending.data?.created_at ?? null;
+  const alerts: OperationalAlert[] = [];
+  if (!workerLastSeenAt || now - new Date(workerLastSeenAt).getTime() >= 90_000) {
+    alerts.push({
+      id: "worker_offline",
+      tone: "red",
+      title: "Worker sem sinal recente",
+      description: "O worker não enviou heartbeat nos últimos 90 segundos. Confira o serviço no Railway e os logs de inicialização.",
+    });
+  }
+  if (oldestPendingAt && now - new Date(oldestPendingAt).getTime() >= 10 * 60_000) {
+    alerts.push({
+      id: "queue_delayed",
+      tone: "amber",
+      title: "Fila aguardando há mais de 10 minutos",
+      description: "Existe um job ativo há mais de 10 minutos. Abra a fila para identificar a etapa e, se necessário, verifique os logs do worker.",
+    });
+  }
   return {
     assets: assets.count ?? 0,
     active: active.count ?? 0,
@@ -117,8 +144,9 @@ export async function getOperationalOverview() {
     critical: critical.count ?? 0,
     recent: recent.data ?? [],
     latestCompletedAt: latestCompleted.data?.finished_at ?? null,
-    oldestPendingAt: oldestPending.data?.created_at ?? null,
-    workerLastSeenAt: workerHeartbeat.data?.last_seen_at ?? null,
+    oldestPendingAt,
+    workerLastSeenAt,
+    alerts,
   };
 }
 
