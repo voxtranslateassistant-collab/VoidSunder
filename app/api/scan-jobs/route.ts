@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { enqueueJob, listJobs, type JobProfile } from "@/lib/jobs";
-import { enforceRateLimit } from "@/lib/rate-limit";
+import { enforceRateLimit, RateLimitError } from "@/lib/rate-limit";
 
 export const dynamic = "force-dynamic";
 
@@ -18,6 +18,9 @@ export async function POST(request: Request) {
     const job = await enqueueJob({ target: body.target, profile, kind: body.kind ?? "web_app", environment: body.environment ?? "production", authorized: body.authorized === true, configuration: body.configuration, testCredential: body.testCredential });
     return NextResponse.json({ job }, { status: 201 });
   } catch (error) {
-    return NextResponse.json({ error: error instanceof Error ? error.message : "Não foi possível enfileirar o scan." }, { status: 400 });
+    return NextResponse.json(
+      { error: error instanceof Error ? error.message : "Não foi possível enfileirar o scan." },
+      { status: error instanceof RateLimitError ? 429 : 400 },
+    );
   }
 }
