@@ -67,6 +67,7 @@ export interface ChatResult {
   text: string;
   error: string | null;
   latencyMs: number;
+  model?: string;
 }
 
 const TIMEOUT_MS = 30_000;
@@ -81,6 +82,16 @@ async function withTimeout(
   } finally {
     clearTimeout(t);
   }
+}
+
+async function availableOpenRouterFreeModel(key: string): Promise<string | null> {
+  try {
+    const response = await withTimeout((signal) => fetch("https://openrouter.ai/api/v1/models", { headers: { Authorization: `Bearer ${key}` }, signal }));
+    if (!response.ok) return null;
+    const data = await response.json() as { data?: Array<{ id?: string; architecture?: { modality?: string } }> };
+    const free = (data.data ?? []).filter((model) => typeof model.id === "string" && model.id.endsWith(":free"));
+    return free.find((model) => /text|chat/i.test(model.architecture?.modality ?? ""))?.id ?? free[0]?.id ?? null;
+  } catch { return null; }
 }
 
 /** Envia (system,user) a um provedor e devolve o texto da resposta. */
@@ -127,14 +138,14 @@ export async function chat(
         data?.candidates?.[0]?.content?.parts
           ?.map((p: { text?: string }) => p.text ?? "")
           .join("") ?? "";
-      return { ok: true, text, error: null, latencyMs: Date.now() - started };
+      return { ok: true, text, error: null, latencyMs: Date.now() - started, model: cfg.model };
     }
 
     if (id === "anthropic") {
       res = await withTimeout((signal) => fetch("https://api.anthropic.com/v1/messages", { method: "POST", signal, headers: { "Content-Type": "application/json", "x-api-key": key, "anthropic-version": "2023-06-01" }, body: JSON.stringify({ model: cfg.model, max_tokens: 512, system, messages: [{ role: "user", content: user }] }) }));
       if (!res.ok) throw new Error(`HTTP ${res.status}: ${await res.text()}`);
       const data = await res.json();
-      return { ok: true, text: data?.content?.map((item: { text?: string }) => item.text ?? "").join("") ?? "", error: null, latencyMs: Date.now() - started };
+      return { ok: true, text: data?.content?.map((item: { text?: string }) => item.text ?? "").join("") ?? "", error: null, latencyMs: Date.now() - started, model: cfg.model };
     }
 
     // Groq, OpenRouter e OpenAI são compatíveis com Chat Completions.
@@ -143,8 +154,7 @@ export async function chat(
         ? "https://api.groq.com/openai/v1/chat/completions"
         : id === "openrouter" ? "https://openrouter.ai/api/v1/chat/completions" : "https://api.openai.com/v1/chat/completions";
 
-    res = await withTimeout((signal) =>
-      fetch(endpoint, {
+    const request = (model: string) => withTimeout((signal) => fetch(endpoint, {
         method: "POST",
         signal,
         headers: {
@@ -152,7 +162,7 @@ export async function chat(
           Authorization: `Bearer ${key}`,
         },
         body: JSON.stringify({
-          model: cfg.model,
+          model,
           temperature: 0,
           max_tokens: 512,
           messages: [
@@ -160,12 +170,20 @@ export async function chat(
             { role: "user", content: user },
           ],
         }),
-      }),
-    );
+      }));
+    let selectedModel = cfg.model;
+    res = await request(selectedModel);
+    if (id === "openrouter" && res.status === 404) {
+      const fallback = await availableOpenRouterFreeModel(key);
+      if (fallback && fallback !== selectedModel) {
+        selectedModel = fallback;
+        res = await request(selectedModel);
+      }
+    }
     if (!res.ok) throw new Error(`HTTP ${res.status}: ${await res.text()}`);
     const data = await res.json();
     const text = data?.choices?.[0]?.message?.content ?? "";
-    return { ok: true, text, error: null, latencyMs: Date.now() - started };
+    return { ok: true, text, error: null, latencyMs: Date.now() - started, model: selectedModel };
   } catch (e) {
     return {
       ok: false,
