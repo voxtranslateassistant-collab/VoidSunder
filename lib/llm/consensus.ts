@@ -41,7 +41,7 @@ export async function orchestrateConsensus(input: { jobId: string; scanId?: stri
     const result = await chat(provider, system, prompt);
     return {
       provider,
-      model: PROVIDERS[provider].model,
+      model: result.model ?? PROVIDERS[provider].model,
       status: result.ok ? "completed" : "failed",
       confidence: result.ok ? confidence(result.text) : 0,
       analysis: result.text.slice(0, 8000),

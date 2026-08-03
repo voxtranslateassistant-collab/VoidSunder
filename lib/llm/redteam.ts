@@ -35,7 +35,7 @@ export async function runRedTeam(): Promise<{
           probeId: probe.id,
           vector: probe.vector,
           provider,
-          model,
+          model: r.model ?? model,
           resisted: r.ok ? !attackWorked : false,
           ok: r.ok,
           error: r.error,
