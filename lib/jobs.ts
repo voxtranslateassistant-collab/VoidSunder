@@ -31,6 +31,14 @@ export type RetestComparison = {
   introduced: JobFinding[];
 };
 
+export type JobArtifact = {
+  id: string;
+  kind: string;
+  label: string;
+  redacted_preview: string | null;
+  created_at: string;
+};
+
 export type OperationalAlert = {
   id: "worker_offline" | "queue_delayed";
   tone: "red" | "amber";
@@ -83,7 +91,14 @@ export async function getJobDetail(id: string) {
 
   const configuration = (job.configuration ?? {}) as { legacy_scan_id?: string; retest_of?: string };
   const findings = await getFindingsForScan(configuration.legacy_scan_id);
-  if (!configuration.retest_of) return { job, findings, retestComparison: null };
+  const { data: artifacts, error: artifactsError } = await supabase
+    .from("evidence_artifacts")
+    .select("id, kind, label, redacted_preview, created_at")
+    .eq("job_id", job.id)
+    .order("created_at", { ascending: false });
+  if (artifactsError) throw artifactsError;
+  const evidenceArtifacts = (artifacts ?? []) as JobArtifact[];
+  if (!configuration.retest_of) return { job, findings, evidenceArtifacts, retestComparison: null };
 
   const { data: originalJob, error: originalError } = await supabase
     .from("scan_jobs")
@@ -91,7 +106,7 @@ export async function getJobDetail(id: string) {
     .eq("id", configuration.retest_of)
     .maybeSingle();
   if (originalError) throw originalError;
-  if (!originalJob) return { job, findings, retestComparison: null };
+  if (!originalJob) return { job, findings, evidenceArtifacts, retestComparison: null };
 
   const originalConfiguration = (originalJob.configuration ?? {}) as { legacy_scan_id?: string };
   const originalFindings = await getFindingsForScan(originalConfiguration.legacy_scan_id);
@@ -103,7 +118,7 @@ export async function getJobDetail(id: string) {
     retained: findings.filter((finding) => originalByKey.has(findingKey(finding))),
     introduced: findings.filter((finding) => !originalByKey.has(findingKey(finding))),
   };
-  return { job, findings, retestComparison };
+  return { job, findings, evidenceArtifacts, retestComparison };
 }
 
 export async function getOperationalOverview() {

@@ -16,8 +16,9 @@ export default async function JobDetailPage({ params }: { params: Promise<{ id: 
   const { id } = await params;
   const detail = await getJobDetail(id);
   if (!detail) notFound();
-  const { job, findings, retestComparison } = detail;
+  const { job, findings, evidenceArtifacts, retestComparison } = detail;
   const asset = Array.isArray(job.assets) ? job.assets[0] : job.assets;
+  const surfaceArtifact = evidenceArtifacts.find((artifact) => artifact.kind === "surface_discovery");
   return (
     <>
       <TopBar title={`Job · ${asset?.name ?? "Ativo"}`} subtitle={job.target_url} />
@@ -25,6 +26,7 @@ export default async function JobDetailPage({ params }: { params: Promise<{ id: 
         <div className="mx-auto max-w-[1600px] space-y-6 p-8">
           <Link href="/scans" className="inline-flex items-center gap-2 text-xs text-fog-blue transition-colors hover:text-bone-white"><ArrowLeft className="size-3.5" />Voltar para fila</Link>
           <Card><CardContent><div className="pt-5 text-sm text-fog-blue">{JOB_PROFILE_LABEL[job.profile as keyof typeof JOB_PROFILE_LABEL]}</div><JobLiveStatus initialJob={job} /></CardContent></Card>
+          {surfaceArtifact && <Card><CardHeader><CardTitle>Descoberta de superfície</CardTitle></CardHeader><CardContent><p className="whitespace-pre-line font-mono text-xs leading-relaxed text-fog-blue">{surfaceArtifact.redacted_preview ?? "O mapa de superfície foi salvo no Cofre de Provas."}</p><Link href="/evidence" className="mt-4 inline-block text-xs text-prism-cyan hover:text-bone-white">Abrir mapa completo no Cofre de Provas →</Link></CardContent></Card>}
           <RetestComparisonPanel comparison={retestComparison} />
           <section className="grid gap-4 md:grid-cols-3">{(job.scan_steps ?? []).slice(-6).reverse().map((step: { id: string; name: string; status: string; message: string | null }) => <Card key={step.id}><CardContent className="py-4"><p className="text-sm">{step.name}</p><p className="mt-1 text-xs text-graphite-veil">{step.message ?? step.status}</p></CardContent></Card>)}</section>
           <Card><CardHeader><CardTitle>Achados ({findings.length})</CardTitle></CardHeader><CardContent className="p-0">{findings.length === 0 ? <EmptyState title={job.status === "completed" ? "Nenhum achado confirmado" : "Ainda não há achados"} description="Os achados aparecem quando o worker concluir as etapas de validação." /> : <Table><thead><tr><Th>Achado</Th><Th className="w-28">Severidade</Th><Th className="w-24 text-right">CVSS</Th></tr></thead><tbody>{findings.map((finding) => <Tr key={finding.id}><Td><Link href={`/findings/${finding.id}`} className="hover:text-prism-cyan">{finding.title}</Link></Td><Td><SeverityPill severity={finding.severity} /></Td><Td className="text-right">{finding.cvss?.toFixed(1) ?? "—"}</Td></Tr>)}</tbody></Table>}</CardContent></Card>
