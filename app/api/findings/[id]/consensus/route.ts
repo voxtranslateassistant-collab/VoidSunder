@@ -1,12 +1,14 @@
 import { NextResponse } from "next/server";
 import { getOperationalFindingById } from "@/lib/operational-data";
 import { orchestrateConsensus } from "@/lib/llm/consensus";
+import { enforceRateLimit, RateLimitError } from "@/lib/rate-limit";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 export async function POST(_request: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
+    await enforceRateLimit("ai_consensus");
     const { id } = await params;
     const finding = await getOperationalFindingById(id);
     if (!finding) return NextResponse.json({ error: "Achado não encontrado." }, { status: 404 });
@@ -18,6 +20,9 @@ export async function POST(_request: Request, { params }: { params: Promise<{ id
     const consensus = await orchestrateConsensus({ jobId: job.id, scanId: finding.scanId, findings: [finding] });
     return NextResponse.json({ consensus });
   } catch (error) {
-    return NextResponse.json({ error: error instanceof Error ? error.message : "Falha ao gerar consenso." }, { status: 400 });
+    return NextResponse.json(
+      { error: error instanceof Error ? error.message : "Falha ao gerar consenso." },
+      { status: error instanceof RateLimitError ? 429 : 400 },
+    );
   }
 }

@@ -41,6 +41,8 @@ export type OperationalAlert = {
 function targetHost(target: string) {
   const url = new URL(/^https?:\/\//i.test(target) ? target : `https://${target}`);
   if (url.protocol !== "https:" && url.protocol !== "http:") throw new Error("Apenas URLs HTTP(S) são aceitas.");
+  if (url.username || url.password) throw new Error("URLs com credenciais embutidas não são aceitas.");
+  url.hash = "";
   return { url: url.toString(), host: url.hostname.toLowerCase() };
 }
 
