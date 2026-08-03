@@ -201,6 +201,169 @@ async function collectPublicMetadata(target) {
   return observations;
 }
 
+// Descoberta de superf\u00edcie p\u00fablica: coleta somente recursos do mesmo dom\u00ednio
+// autorizado, com limites pequenos. N\u00e3o envia formul\u00e1rios, n\u00e3o segue dom\u00ednios
+// externos e n\u00e3o tenta autentica\u00e7\u00e3o fora do fluxo de conta de teste.
+function discoveryLimits(configuration) {
+  // Valores sempre limitados pelo worker; a interface apenas escolhe entre
+  // perfis previs\u00edveis de cobertura para n\u00e3o transformar o scan em varredura sem controle.
+  if (configuration?.surface_depth === "expanded") return { pages: 20, scripts: 12, pathChecks: 7 };
+  if (configuration?.surface_depth === "focused") return { pages: 6, scripts: 4, pathChecks: 4 };
+  return { pages: 12, scripts: 8, pathChecks: 7 };
+}
+
+function isCrawlableRoute(value, origin) {
+  try {
+    const url = new URL(value, origin);
+    if (url.origin !== origin || !/^https?:$/.test(url.protocol) || url.search || url.hash) return null;
+    const path = url.pathname || "/";
+    if (!/^\/(?!\/)/.test(path)) return null;
+    if (/\/(?:logout|signout|delete|remove|destroy|unsubscribe|callback)(?:\/|$)/i.test(path)) return null;
+    if (/\.(?:png|jpe?g|gif|webp|svg|ico|css|woff2?|ttf|eot|mp4|mp3|zip|gz|tar|pdf)$/i.test(path)) return null;
+    return url.toString();
+  } catch { return null; }
+}
+
+function collectMarkupReferences(html, origin) {
+  const routes = new Set();
+  const scripts = new Set();
+  for (const match of html.matchAll(/<(?:a|form)[^>]+(?:href|action)=["']([^"'#][^"']*)["']/gi)) {
+    const route = isCrawlableRoute(match[1], origin);
+    if (route) routes.add(route);
+  }
+  for (const match of html.matchAll(/<script[^>]+src=["']([^"']+)["']/gi)) {
+    try {
+      const script = new URL(match[1], origin);
+      if (script.origin === origin && /^\/(?!\/)/.test(script.pathname) && /\.m?js$/i.test(script.pathname)) scripts.add(script.toString());
+    } catch { /* malformed public script reference */ }
+  }
+  return { routes: [...routes], scripts: [...scripts] };
+}
+
+function detectPublicTechnologies(html, headers) {
+  const found = [];
+  const add = (name, source) => { if (!found.some(([value]) => value === name)) found.push(["technology", name, "Detectado em conte\u00fado p\u00fablico", source]); };
+  if (/_next\/static|__NEXT_DATA__/i.test(html)) add("Next.js", "public_markup");
+  if (/wp-content|wp-includes/i.test(html)) add("WordPress", "public_markup");
+  if (/laravel_session|csrf-token/i.test(html)) add("Laravel", "public_markup");
+  if (/__NUXT__|_nuxt\//i.test(html)) add("Nuxt", "public_markup");
+  if (/data-reactroot|react(?:\.production)?\.min\.js/i.test(html)) add("React", "public_markup");
+  if (/ng-version|angular(?:\.min)?\.js/i.test(html)) add("Angular", "public_markup");
+  if (/cloudflare/i.test(headers["server"] || "") || /cf-ray/i.test(Object.keys(headers).join(" "))) add("Cloudflare", "http_headers");
+  return found;
+}
+
+function extractPublicApiReferences(source, origin) {
+  const routes = new Set();
+  const patterns = [
+    /(?:fetch|axios\.(?:get|post|put|patch|delete)|\.open)\s*\(\s*["'](\/api\/[A-Za-z0-9_./{}-]{1,180})/g,
+    /["'](\/api\/[A-Za-z0-9_./{}-]{1,180})["']/g,
+    /["'](\/(?:swagger|openapi)(?:\.json)?)["']/g,
+  ];
+  for (const pattern of patterns) {
+    for (const match of source.matchAll(pattern)) {
+      const route = isCrawlableRoute(match[1], origin);
+      if (route) routes.add(new URL(route).pathname);
+      if (routes.size >= 40) return [...routes];
+    }
+  }
+  return [...routes];
+}
+
+function publicExposureFinding({ title, severity, cwe, endpoint, evidence, recommendation, state = "confirmed", confidence = 0.9 }) {
+  return {
+    title, severity, cwe, endpoint,
+    summary: evidence,
+    confidence,
+    finding_type: "public_exposure",
+    validation_status: state,
+    evidence_masked: evidence,
+    source: "controlled_public_exposure_check",
+    impact: "Um recurso sens\u00edvel exposto publicamente pode ampliar a superf\u00edcie de ataque e revelar detalhes \u00fateis a um invasor.",
+    attack_prerequisites: "Acesso HTTP ao recurso dentro do dom\u00ednio aprovado; nenhuma autentica\u00e7\u00e3o ou credencial foi usada.",
+    recommended_fix: recommendation,
+    retest_steps: `Solicite somente ${new URL(endpoint).pathname} ap\u00f3s a corre\u00e7\u00e3o e confirme que o recurso n\u00e3o fica acess\u00edvel publicamente.`,
+    scope_compliance: "approved",
+  };
+}
+
+async function requestDiscoveryResource(target, approvedOrigin, maxBytes = 60_000) {
+  await assertSameOriginPublicUrl(target, approvedOrigin);
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 6_000);
+  try {
+    const response = await fetch(target, {
+      method: "GET", redirect: "manual", signal: controller.signal,
+      headers: { "User-Agent": "AegisForge-Worker/1.2 (+authorized-surface-discovery)", Accept: "text/html,application/javascript,application/json,text/plain,*/*" },
+    });
+    const contentType = response.headers.get("content-type") || "";
+    const text = /(?:text\/|json|javascript|xml)/i.test(contentType) ? await readResponseExcerpt(response, maxBytes) : "";
+    return { status: response.status, contentType, text, headers: response.headers };
+  } finally { clearTimeout(timer); }
+}
+
+async function discoverPublicSurface(target, initialBody, initialHeaders, configuration) {
+  const origin = new URL(target).origin;
+  const limits = discoveryLimits(configuration);
+  const observations = [...detectPublicTechnologies(initialBody, initialHeaders)];
+  const findings = [];
+  const evidence = [];
+  const visited = new Set([target]);
+  const first = collectMarkupReferences(initialBody, origin);
+  const queue = first.routes.slice(0, limits.pages);
+  const scripts = new Set(first.scripts);
+  const apiRoutes = new Set(extractPublicApiReferences(initialBody, origin));
+
+  while (queue.length && visited.size <= limits.pages) {
+    const route = queue.shift();
+    if (!route || visited.has(route)) continue;
+    visited.add(route);
+    try {
+      const resource = await requestDiscoveryResource(route, origin);
+      observations.push(["route", new URL(route).pathname, `HTTP ${resource.status}; ${resource.contentType.split(";")[0] || "tipo n\u00e3o divulgado"}`, "surface_crawler"]);
+      if (resource.status < 200 || resource.status >= 400 || !/html/i.test(resource.contentType)) continue;
+      const references = collectMarkupReferences(resource.text, origin);
+      for (const next of references.routes) if (!visited.has(next) && queue.length < limits.pages * 2) queue.push(next);
+      for (const script of references.scripts) if (scripts.size < limits.scripts) scripts.add(script);
+      for (const api of extractPublicApiReferences(resource.text, origin)) apiRoutes.add(api);
+      observations.push(...detectPublicTechnologies(resource.text, Object.fromEntries(resource.headers.entries())));
+    } catch { /* one inaccessible page does not interrupt discovery */ }
+  }
+
+  for (const script of [...scripts].slice(0, limits.scripts)) {
+    try {
+      const resource = await requestDiscoveryResource(script, origin, 80_000);
+      observations.push(["script", new URL(script).pathname, `HTTP ${resource.status}; JavaScript p\u00fablico`, "surface_script"]);
+      if (resource.status >= 200 && resource.status < 300) for (const api of extractPublicApiReferences(resource.text, origin)) apiRoutes.add(api);
+    } catch { /* script inventory is best effort */ }
+  }
+  for (const apiPath of [...apiRoutes].slice(0, 40)) observations.push(["api_surface", `GET ${apiPath}`, "Refer\u00eancia encontrada em conte\u00fado p\u00fablico", "public_javascript"]);
+
+  const checks = [
+    { path: "/.env", title: "Arquivo de configura\u00e7\u00e3o p\u00fablico", severity: "critical", cwe: "CWE-538", match: /^[A-Z][A-Z0-9_]{1,80}\s*=/m, fix: "Remova o arquivo da publica\u00e7\u00e3o e rotacione os segredos potencialmente expostos." },
+    { path: "/.git/HEAD", title: "Metadado de reposit\u00f3rio Git p\u00fablico", severity: "high", cwe: "CWE-527", match: /^ref:\s*refs\//m, fix: "Bloqueie o diret\u00f3rio .git no servidor e revise o artefato publicado." },
+    { path: "/backup.sql", title: "Backup SQL acess\u00edvel publicamente", severity: "critical", cwe: "CWE-530", match: /(?:CREATE TABLE|INSERT INTO|-- MySQL Dump)/i, fix: "Remova o backup da raiz p\u00fablica, revogue o acesso e investigue a origem do arquivo." },
+    { path: "/swagger.json", title: "Especifica\u00e7\u00e3o Swagger acess\u00edvel", severity: "low", cwe: "CWE-200", match: /"swagger"\s*:/i, fix: "Confirme se a documenta\u00e7\u00e3o deve ser p\u00fablica e proteja-a quando expuser opera\u00e7\u00f5es internas." },
+    { path: "/openapi.json", title: "Especifica\u00e7\u00e3o OpenAPI acess\u00edvel", severity: "low", cwe: "CWE-200", match: /"openapi"\s*:/i, fix: "Confirme se a documenta\u00e7\u00e3o deve ser p\u00fablica e proteja-a quando expuser opera\u00e7\u00f5es internas." },
+    { path: "/server-status", title: "Status do servidor acess\u00edvel", severity: "medium", cwe: "CWE-200", match: /Apache Server Status/i, fix: "Restrinja server-status a uma rede administrativa autenticada." },
+    { path: "/phpinfo.php", title: "Diagn\u00f3stico PHP acess\u00edvel", severity: "medium", cwe: "CWE-200", match: /phpinfo\(\)|PHP Version/i, fix: "Remova a p\u00e1gina de diagn\u00f3stico da publica\u00e7\u00e3o." },
+  ];
+  for (const check of checks.slice(0, limits.pathChecks)) {
+    const endpoint = new URL(check.path, origin).toString();
+    try {
+      const resource = await requestDiscoveryResource(endpoint, origin, 4_000);
+      if (resource.status < 200 || resource.status >= 300 || !check.match.test(resource.text)) continue;
+      const metadata = check.path === "/.env"
+        ? `${(resource.text.match(/^[A-Z][A-Z0-9_]{1,80}(?=\s*=)/gm) || []).slice(0, 8).join(", ") || "chaves de configura\u00e7\u00e3o"} [valores redigidos]`
+        : `HTTP ${resource.status}; ${resource.contentType.split(";")[0] || "tipo n\u00e3o divulgado"}; conte\u00fado confirmado por assinatura n\u00e3o sens\u00edvel`;
+      findings.push(publicExposureFinding({ title: check.title, severity: check.severity, cwe: check.cwe, endpoint, evidence: `${check.path} respondeu publicamente. ${metadata}`, recommendation: check.fix }));
+      observations.push(["public_file", check.path, "Exposi\u00e7\u00e3o confirmada; conte\u00fado sens\u00edvel n\u00e3o armazenado", "controlled_public_exposure_check"]);
+      evidence.push(`${check.path}: exposi\u00e7\u00e3o confirmada; somente metadados redigidos foram retidos.`);
+    } catch { /* endpoint unavailable or blocked */ }
+  }
+  return { observations, findings, evidence, crawledPages: visited.size - 1, scripts: Math.min(scripts.size, limits.scripts), apiReferences: Math.min(apiRoutes.size, 40) };
+}
+
 function credentialKey() {
   const secret = process.env.ASSET_CREDENTIAL_ENCRYPTION_SECRET;
   if (!secret) throw new Error("O worker não possui ASSET_CREDENTIAL_ENCRYPTION_SECRET configurado.");
@@ -467,7 +630,13 @@ async function validateDeclaredApiRoutes(configuration, target) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 6_000);
     try {
-      const response = await fetch(endpoint, { method, redirect: "manual", signal: controller.signal, headers: { "User-Agent": "AegisForge-Worker/1.1 (+authorized-api-validation)" } });
+      const response = await fetch(endpoint, {
+        method, redirect: "manual", signal: controller.signal,
+        headers: {
+          "User-Agent": "AegisForge-Worker/1.2 (+authorized-api-validation)",
+          ...(method === "OPTIONS" ? { Origin: "https://voidsunder.invalid", "Access-Control-Request-Method": "GET" } : {}),
+        },
+      });
       return { status: response.status, contentType: response.headers.get("content-type") || "não divulgado", allow: response.headers.get("allow") || "", corsOrigin: response.headers.get("access-control-allow-origin") || "", corsCredentials: response.headers.get("access-control-allow-credentials") || "" };
     } catch (error) {
       return { status: null, contentType: error instanceof Error ? error.message.slice(0, 160) : "falha de conexão", allow: "", corsOrigin: "", corsCredentials: "" };
@@ -491,6 +660,13 @@ function apiRouteProbeFindings(results) {
       evidence_masked: `OPTIONS ${new URL(route.endpoint).pathname}; Access-Control-Allow-Origin: *; Access-Control-Allow-Credentials: true`, source: "api_route_validation",
       impact: "Pode expor respostas autenticadas a origens não confiáveis quando a configuração for aceita pelo navegador.", attack_prerequisites: "Usuário autenticado acessando uma origem não confiável compatível.",
       recommended_fix: "Restrinja as origens permitidas e não combine curinga com credenciais.", retest_steps: "Envie OPTIONS com origem não autorizada e confirme que ela não recebe permissão.", scope_compliance: "approved",
+    }];
+    if (route.corsOrigin === "https://voidsunder.invalid") return [{
+      title: "Rota de API aceitou origem externa de teste", severity: "medium", cwe: "CWE-942", endpoint: route.endpoint,
+      summary: "A resposta OPTIONS aceitou explicitamente a origem externa de teste enviada pelo worker.", confidence: 0.85, finding_type: "cors_origin_review", validation_status: "conditional",
+      evidence_masked: `OPTIONS ${new URL(route.endpoint).pathname}; Origin de teste aceita: ${route.corsOrigin}`, source: "api_route_validation",
+      impact: "Pode permitir leitura entre origens quando a rota retornar dados sensíveis ou combinar a política com credenciais.", attack_prerequisites: "A política CORS precisa aceitar origens não confiáveis no navegador e a rota precisa expor dados relevantes.",
+      recommended_fix: "Valide Origin contra uma lista explícita de aplicações confiáveis e recuse origens não cadastradas.", retest_steps: "Repita OPTIONS com uma origem externa de teste e confirme ausência de Access-Control-Allow-Origin correspondente.", scope_compliance: "approved",
     }];
     return [];
   });
@@ -595,6 +771,11 @@ async function execute(job) {
     const { response, effectiveTarget, redirect } = await fetchAuthorizedTarget(job.target_url);
     const headersText = [...response.headers.entries()].map(([name, value]) => `${name}: ${value}`).sort().join("\n");
     const body = await readResponseExcerpt(response);
+    let surfaceDiscovery = { observations: [], findings: [], evidence: [], crawledPages: 0, scripts: 0, apiReferences: 0 };
+    if (job.profile !== "llm_lab") {
+      await progress(job, 35, "Mapeando superf\u00edcie p\u00fablica autorizada");
+      surfaceDiscovery = await discoverPublicSurface(effectiveTarget, body, Object.fromEntries(response.headers.entries()), job.configuration);
+    }
     let authenticatedEvidence = null;
     if (job.profile === "authenticated_web") {
       await progress(job, 45, "Validando sessão de teste com Playwright");
@@ -608,6 +789,7 @@ async function execute(job) {
       ...(job.profile === "api_validation" ? apiOperationalFindings(response.headers, effectiveTarget) : []),
       ...(job.profile === "api_validation" ? openApiContractFindings(job.configuration, effectiveTarget) : []),
       ...(job.profile === "api_validation" ? apiRouteProbeFindings(apiRouteResults) : []),
+      ...surfaceDiscovery.findings,
       ...apiRouteResults.filter((route) => typeof route.status === "number" && route.status >= 500).map((route) => ({
         title: "Endpoint de API retornou erro de servidor", severity: "medium", cwe: "CWE-209", endpoint: route.endpoint,
         summary: `GET autorizado recebeu HTTP ${route.status}.`, confidence: 0.9, finding_type: "api_server_error", validation_status: "confirmed",
@@ -625,7 +807,7 @@ async function execute(job) {
     ]);
     const publicMetadata = await collectPublicMetadata(effectiveTarget);
     const authenticatedObservations = authenticatedEvidence ? [["authenticated_route", authenticatedEvidence.finalPath, "Rota confirmada após login de teste", "playwright"], ...authenticatedEvidence.privateLinks.map((path) => ["authenticated_route", path, "Rota privada referenciada", "playwright"])] : [];
-    const inventory = [...publicInventory(effectiveTarget, response, body, resolvedAddresses.join(", ")), ...publicMetadata, ...authenticatedObservations, ...(redirect ? [["transport", "Redirecionamento validado", redirect, "http_redirect"]] : []), ...(job.profile === "api_validation" ? openApiInventory(job.configuration) : []), ...(job.profile === "api_validation" ? postmanInventory(job.configuration) : []), ...routeObservations, ...apiMethodObservations];
+    const inventory = [...publicInventory(effectiveTarget, response, body, resolvedAddresses.join(", ")), ...publicMetadata, ...surfaceDiscovery.observations, ...authenticatedObservations, ...(redirect ? [["transport", "Redirecionamento validado", redirect, "http_redirect"]] : []), ...(job.profile === "api_validation" ? openApiInventory(job.configuration) : []), ...(job.profile === "api_validation" ? postmanInventory(job.configuration) : []), ...routeObservations, ...apiMethodObservations];
     await db.from("inventory_observations").upsert(inventory.map(([category, name, value_masked, source]) => ({ org_id: job.org_id, asset_id: job.asset_id, scan_id: scan.id, category, name, value_masked, source })), { onConflict: "asset_id,category,name,source" });
     const fingerprint = (finding) => createHash("sha256").update(`${job.asset_id}:${finding.title}:${finding.endpoint}`).digest("hex");
     const savedFindings = [];
@@ -654,6 +836,18 @@ async function execute(job) {
     const upload = await db.storage.from("evidence-vault").upload(path, Buffer.from(content), { contentType: "text/plain", upsert: false });
     if (upload.error) throw upload.error;
     await db.from("evidence_artifacts").insert({ org_id: job.org_id, job_id: job.id, kind: "http_response", label: "Resposta HTTP redigida", storage_path: path, sha256: createHash("sha256").update(content).digest("hex"), size_bytes: Buffer.byteLength(content), redacted_preview: content.slice(0, 500) });
+    const surfaceContent = [
+      "Descoberta de superf\u00edcie p\u00fablica autorizada",
+      `P\u00e1ginas p\u00fablicas visitadas: ${surfaceDiscovery.crawledPages}`,
+      `Scripts pr\u00f3prios inspecionados: ${surfaceDiscovery.scripts}`,
+      `Refer\u00eancias de API encontradas: ${surfaceDiscovery.apiReferences}`,
+      ...(surfaceDiscovery.evidence.length ? surfaceDiscovery.evidence : ["Nenhuma exposi\u00e7\u00e3o de alto sinal foi confirmada nos caminhos limitados."]),
+      "A descoberta permaneceu no mesmo dom\u00ednio aprovado; valores sens\u00edveis n\u00e3o foram armazenados.",
+    ].join("\n");
+    const surfacePath = `${job.org_id}/${job.id}/surface-discovery.txt`;
+    const surfaceUpload = await db.storage.from("evidence-vault").upload(surfacePath, Buffer.from(surfaceContent), { contentType: "text/plain", upsert: false });
+    if (surfaceUpload.error) throw surfaceUpload.error;
+    await db.from("evidence_artifacts").insert({ org_id: job.org_id, job_id: job.id, kind: "surface_discovery", label: "Mapa de superf\u00edcie p\u00fablica", storage_path: surfacePath, sha256: createHash("sha256").update(surfaceContent).digest("hex"), size_bytes: Buffer.byteLength(surfaceContent), redacted_preview: surfaceContent.slice(0, 500) });
     if (authenticatedEvidence) {
       const authContent = ["Validação autenticada controlada", `Login: ${authenticatedEvidence.loginUrl}`, `Rota confirmada: ${authenticatedEvidence.finalPath}`, `Título: ${authenticatedEvidence.title}`, `Rotas privadas referenciadas: ${authenticatedEvidence.privateLinks.length}`, "Nenhuma senha, cookie, token ou conteúdo pessoal foi armazenado."].join("\n");
       const authPath = `${job.org_id}/${job.id}/authenticated-session.txt`;
