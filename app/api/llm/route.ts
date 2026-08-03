@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { runRedTeam } from "@/lib/llm/redteam";
 import { configuredProviders, PROVIDERS } from "@/lib/llm/providers";
 import { ensureLlmAccess, getLatestLlmRun, persistLlmRun } from "@/lib/llm/runs";
+import { enforceRateLimit } from "@/lib/rate-limit";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -27,6 +28,11 @@ export async function POST() {
     await ensureLlmAccess();
   } catch (error) {
     return NextResponse.json({ error: error instanceof Error ? error.message : "Autenticação necessária." }, { status: 401 });
+  }
+  try {
+    await enforceRateLimit("llm_lab_run");
+  } catch (error) {
+    return NextResponse.json({ error: error instanceof Error ? error.message : "Limite temporário atingido." }, { status: 429 });
   }
   const result = await runRedTeam();
   if (!result.ok) {

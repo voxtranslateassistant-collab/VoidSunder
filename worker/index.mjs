@@ -14,11 +14,54 @@ let lastHeartbeatAt = 0;
 let lastLeaseRecoveryAt = 0;
 let loopInProgress = false;
 
-const isPrivateIp = (ip) => {
-  if (net.isIPv4(ip)) return /^(127\.|10\.|0\.|169\.254\.|192\.168\.|172\.(1[6-9]|2\d|3[0-1])\.)/.test(ip);
-  const normalized = ip.toLowerCase();
-  return normalized === "::1" || normalized.startsWith("fe80:") || normalized.startsWith("fc") || normalized.startsWith("fd");
+const isPrivateIpv4 = (ip) => {
+  const octets = ip.split(".").map(Number);
+  if (octets.length !== 4 || octets.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) return true;
+  const [a, b, c] = octets;
+  return a === 0
+    || a === 10
+    || a === 127
+    || (a === 100 && b >= 64 && b <= 127) // carrier-grade NAT
+    || (a === 169 && b === 254)
+    || (a === 172 && b >= 16 && b <= 31)
+    || (a === 192 && (b === 0 || b === 168))
+    || (a === 198 && (b === 18 || b === 19 || b === 51))
+    || (a === 203 && b === 0 && c === 113)
+    || a >= 224;
 };
+
+const isPrivateIp = (ip) => {
+  if (net.isIPv4(ip)) return isPrivateIpv4(ip);
+  const normalized = ip.toLowerCase();
+  const mappedIpv4 = normalized.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/);
+  if (mappedIpv4) return isPrivateIpv4(mappedIpv4[1]);
+  return normalized === "::"
+    || normalized === "::1"
+    || normalized.startsWith("fe8:")
+    || normalized.startsWith("fe9:")
+    || normalized.startsWith("fea:")
+    || normalized.startsWith("feb:")
+    || normalized.startsWith("fc")
+    || normalized.startsWith("fd")
+    || normalized.startsWith("ff");
+};
+
+async function resolvePublicAddresses(parsed) {
+  const addresses = net.isIP(parsed.hostname)
+    ? [{ address: parsed.hostname }]
+    : await lookup(parsed.hostname, { all: true });
+  if (!addresses.length) throw new Error("O DNS do destino não retornou endereços públicos.");
+  if (addresses.some(({ address }) => isPrivateIp(address))) throw new Error("Destinos internos, reservados ou multicast não são permitidos.");
+  return addresses.map(({ address }) => address);
+}
+
+async function assertSameOriginPublicUrl(target, approvedOrigin) {
+  const parsed = new URL(target);
+  if (!/^https?:$/.test(parsed.protocol)) throw new Error("O worker aceita somente HTTP(S).");
+  if (parsed.username || parsed.password) throw new Error("URLs com credenciais embutidas não são permitidas.");
+  if (parsed.origin !== approvedOrigin) throw new Error("Destino fora do escopo aprovado.");
+  return resolvePublicAddresses(parsed);
+}
 
 async function assertPublicTarget(target, asset, scope) {
   const parsed = new URL(target);
@@ -27,16 +70,16 @@ async function assertPublicTarget(target, asset, scope) {
     try { const allowedUrl = new URL(value); return parsed.origin === allowedUrl.origin; } catch { return false; }
   });
   if (!allowed || parsed.origin !== new URL(asset.target).origin) throw new Error("Destino fora do escopo aprovado.");
-  const addresses = await lookup(parsed.hostname, { all: true });
-  if (!addresses.length) throw new Error("O DNS do destino não retornou endereços públicos.");
-  if (addresses.some(({ address }) => isPrivateIp(address))) throw new Error("Destinos internos ou reservados não são permitidos.");
-  return addresses.map(({ address }) => address);
+  if (parsed.username || parsed.password) throw new Error("URLs com credenciais embutidas não são permitidas.");
+  return resolvePublicAddresses(parsed);
 }
 
 async function fetchAuthorizedTarget(target) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 12_000);
   try {
+    const source = new URL(target);
+    await assertSameOriginPublicUrl(target, source.origin);
     const response = await fetch(target, {
       redirect: "manual",
       signal: controller.signal,
@@ -45,8 +88,8 @@ async function fetchAuthorizedTarget(target) {
     const location = response.headers.get("location");
     if (response.status >= 300 && response.status < 400 && location) {
       const destination = new URL(location, target);
-      const source = new URL(target);
       if (destination.origin !== source.origin) throw new Error(`Redirecionamento bloqueado por sair do escopo aprovado: ${destination.origin}`);
+      await assertSameOriginPublicUrl(destination.toString(), source.origin);
       const redirected = await fetch(destination, {
         redirect: "error",
         signal: controller.signal,
@@ -60,6 +103,29 @@ async function fetchAuthorizedTarget(target) {
     throw new Error(`Não foi possível obter resposta HTTP autorizada: ${reason}`, { cause: error });
   } finally {
     clearTimeout(timer);
+  }
+}
+
+function redactEvidence(value) {
+  return value
+    .replace(/(^|\n)(\s*(?:authorization|proxy-authorization|cookie|set-cookie|x-api-key|api-key|x-auth-token|x-access-token|client-secret|client_secret|password|passwd)\s*:\s*)[^\n]*/gim, "$1$2[REDACTED]")
+    .replace(/(["']?(?:access[_-]?token|refresh[_-]?token|id[_-]?token|api[_-]?key|secret|client[_-]?secret|password|passwd)["']?\s*[:=]\s*["']?)[^\s,;"'}\]]+/gim, "$1[REDACTED]")
+    .replace(/([?&](?:access_token|refresh_token|token|api_key|apikey|key|secret|password)=)[^&#\s]+/gim, "$1[REDACTED]")
+    .replace(/\beyJ[a-zA-Z0-9_-]{10,}\.[a-zA-Z0-9_-]{10,}\.[a-zA-Z0-9_-]{10,}\b/g, "[REDACTED_JWT]")
+    .replace(/\b(?:AIza[\w-]{20,}|sk-[\w-]{20,}|gsk_[\w-]{20,}|sk-ant-[\w-]{20,}|sk-or-v1-[\w-]{20,})\b/g, "[REDACTED_KEY]");
+}
+
+function redactTargetUrl(value) {
+  try {
+    const parsed = new URL(value);
+    parsed.username = "";
+    parsed.password = "";
+    for (const key of [...parsed.searchParams.keys()]) {
+      if (/(token|key|secret|password|auth)/i.test(key)) parsed.searchParams.set(key, "[REDACTED]");
+    }
+    return parsed.toString();
+  } catch {
+    return redactEvidence(value);
   }
 }
 
@@ -100,6 +166,7 @@ async function collectPublicMetadata(target) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 6_000);
     try {
+      await assertSameOriginPublicUrl(endpoint.toString(), origin);
       const response = await fetch(endpoint, {
         method: "GET",
         redirect: "manual",
@@ -151,7 +218,7 @@ function decryptFormCredential(encryptedValue) {
   return credential;
 }
 
-async function runAuthenticatedValidation(job, target) {
+async function runAuthenticatedValidation(job, target, approvedAddresses) {
   const { data, error } = await db.from("asset_credentials").select("encrypted_value").eq("asset_id", job.asset_id).eq("kind", "form_login").eq("label", "form-login").maybeSingle();
   if (error) throw error;
   if (!data) throw new Error("Nenhuma conta de teste foi cadastrada para este ativo.");
@@ -159,9 +226,26 @@ async function runAuthenticatedValidation(job, target) {
   const targetOrigin = new URL(target).origin;
   if (new URL(credential.loginUrl).origin !== targetOrigin) throw new Error("A URL de login sai do domínio aprovado.");
   const { chromium } = await import("playwright");
-  const browser = await chromium.launch({ headless: true, args: ["--disable-dev-shm-usage"] });
+  const targetHostname = new URL(target).hostname;
+  const pinnedAddress = approvedAddresses.find((address) => net.isIPv4(address)) ?? approvedAddresses[0];
+  const resolverRule = net.isIP(targetHostname) || !pinnedAddress ? null : `MAP ${targetHostname} ${pinnedAddress}, EXCLUDE localhost`;
+  const browser = await chromium.launch({
+    headless: true,
+    args: ["--disable-dev-shm-usage", ...(resolverRule ? [`--host-resolver-rules=${resolverRule}`] : [])],
+  });
   try {
     const page = await browser.newPage();
+    await page.route("**/*", async (route) => {
+      try {
+        const requestUrl = new URL(route.request().url());
+        if (requestUrl.protocol === "data:" || requestUrl.protocol === "blob:") return route.continue();
+        if (!/^https?:$/.test(requestUrl.protocol) || requestUrl.origin !== targetOrigin) return route.abort("blockedbyclient");
+        await assertSameOriginPublicUrl(requestUrl.toString(), targetOrigin);
+        return route.continue();
+      } catch {
+        return route.abort("blockedbyclient");
+      }
+    });
     const expectedLoginPath = new URL(credential.loginUrl).pathname;
     await page.goto(credential.loginUrl, { waitUntil: "domcontentloaded", timeout: 20_000 });
     await page.locator('input[type="email"], input[name="email"], input[name="username"], input[autocomplete="username"]').first().fill(credential.username, { timeout: 8_000 });
@@ -185,10 +269,10 @@ async function saveFailureDiagnostic(job, target, addresses, error) {
   const detail = error instanceof Error ? error.message : "Erro inesperado";
   const content = [
     "Diagnóstico de conectividade VoidSunder",
-    `Alvo autorizado: ${target}`,
+    `Alvo autorizado: ${redactTargetUrl(target)}`,
     `DNS público: ${addresses.join(", ") || "não resolvido"}`,
     `Momento: ${new Date().toISOString()}`,
-    `Resultado: ${detail.slice(0, 800)}`,
+    `Resultado: ${redactEvidence(detail).slice(0, 800)}`,
     "Nenhuma rota alternativa, credencial ou tentativa de evasão foi executada.",
   ].join("\n");
   const path = `${job.org_id}/${job.id}/connection-diagnostic.txt`;
@@ -514,7 +598,7 @@ async function execute(job) {
     let authenticatedEvidence = null;
     if (job.profile === "authenticated_web") {
       await progress(job, 45, "Validando sessão de teste com Playwright");
-      authenticatedEvidence = await runAuthenticatedValidation(job, effectiveTarget);
+      authenticatedEvidence = await runAuthenticatedValidation(job, effectiveTarget, resolvedAddresses);
     }
     await progress(job, 55, "Analisando postura de segurança");
     const apiRouteResults = job.profile === "api_validation" ? await validateDeclaredApiRoutes(job.configuration, effectiveTarget) : [];
@@ -565,7 +649,7 @@ async function execute(job) {
       if (saved) savedFindings.push(saved.id);
     }
     await progress(job, 85, "Guardando evidência redigida");
-    const content = `HTTP ${response.status}\n${headersText}\n\n${body.replace(/(authorization|cookie|token)\s*[:=]\s*[^\s;]+/gi, "$1: [REDACTED]").slice(0, 20_000)}`;
+    const content = redactEvidence(`HTTP ${response.status}\n${headersText}\n\n${body}`).slice(0, 20_000);
     const path = `${job.org_id}/${job.id}/http-response.txt`;
     const upload = await db.storage.from("evidence-vault").upload(path, Buffer.from(content), { contentType: "text/plain", upsert: false });
     if (upload.error) throw upload.error;
